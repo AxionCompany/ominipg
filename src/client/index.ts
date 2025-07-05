@@ -76,7 +76,7 @@ export class EdgeDB extends TypedEmitter<EdgeDBClientEvents> {
     public static async connect(options: EdgeDBConnectionOptions): Promise<any> {
         const db = new EdgeDB(options);
 
-        const { drizzle } = await import("npm:drizzle-orm/node-postgres");
+        const { drizzle } = await import("npm:drizzle-orm/node-postgres@0.44.2");
         
         // Create a custom driver for Drizzle
         const driver = {
