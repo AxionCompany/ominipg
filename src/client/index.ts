@@ -1,6 +1,6 @@
 
-import "npm:pg";
-import { TypedEmitter } from 'npm:tiny-typed-emitter';
+import "npm:pg@8.16.3";
+import { TypedEmitter } from 'npm:tiny-typed-emitter@2.1.0';
 import type { EdgeDBConnectionOptions, EdgeDBClientEvents } from './types.ts';
 import type { WorkerMsg, ResponseMsg, InitMsg, ExecMsg, SyncMsg, SyncSeqMsg, DiagnosticMsg, CloseMsg } from '../shared/types.ts';
 

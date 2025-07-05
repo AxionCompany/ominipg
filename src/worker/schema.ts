@@ -1,7 +1,7 @@
 
 import { mainDb, mainDbType, syncPool, meta } from './db.ts';
 import { ident } from './utils.ts';
-import pg from 'npm:pg';
+import pg from 'npm:pg@8.16.3';
 
 /**
  * Attaches the outbox trigger to a single table.

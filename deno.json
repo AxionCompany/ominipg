@@ -1,0 +1,12 @@
+{
+    "name": "@oxian/ominipg",
+    "description": "Postgres for all ",
+    "version": "0.0.1",
+    "author": "Ominipg",
+    "license": "MIT",
+    "exports": "./src/client/index.ts",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/AxionCompany/ominipg"
+    },
+}

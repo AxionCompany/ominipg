@@ -1,7 +1,7 @@
 
 /// <reference lib="deno.unstable" />
-import pg from "npm:pg";
-import { PGlite } from "npm:@electric-sql/pglite";
+import pg from "npm:pg@8.16.3";
+import { PGlite } from "npm:@electric-sql/pglite@0.3.4";
 import { detectDatabaseType } from './utils.ts';
 import type { InitMsg } from "../shared/types.ts";
 
