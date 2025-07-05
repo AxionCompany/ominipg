@@ -52,10 +52,24 @@ async function createTriggerFunction() {
       CREATE OR REPLACE FUNCTION outbox_trigger_fn()
       RETURNS TRIGGER AS $$
       DECLARE
+        is_applying_remote_change TEXT;
         pk_cols TEXT[];
         pk_vals JSONB := '{}';
         col_name TEXT;
       BEGIN
+        -- Check a session variable to see if we should skip this trigger.
+        -- This is to prevent the puller from creating an echo.
+        BEGIN
+          is_applying_remote_change := current_setting('app.sync.is_applying_remote_change', true);
+        EXCEPTION WHEN OTHERS THEN
+          is_applying_remote_change := 'false';
+        END;
+
+        IF is_applying_remote_change = 'true' THEN
+          RETURN COALESCE(NEW, OLD); -- Do nothing
+        END IF;
+
+        -- Original trigger logic continues here
         SELECT array_agg(a.attname) INTO pk_cols
         FROM pg_index i
         JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)

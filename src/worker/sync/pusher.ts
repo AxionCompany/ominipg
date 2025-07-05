@@ -56,15 +56,17 @@ export async function pushBatch(): Promise<number> {
         await client.query('BEGIN');
         try {
             for (const row of outboxResult.rows) {
+                console.log('Pushing change:', JSON.stringify(row, null, 2));
                 await ensureMeta(row.table_name);
                 const m = meta.get(row.table_name)!;
 
                 // Track this change to prevent processing it as an echo later
                 const pkValues = m.pk.map(col => String(row.pk[col] || '')).join('|');
                 if (!recentlyPushed.has(row.table_name)) {
-                    recentlyPushed.set(row.table_name, new Set());
+                    recentlyPushed.set(row.table_name, new Map());
                 }
-                recentlyPushed.get(row.table_name)!.add(pkValues);
+                const lwwValue = row.row_json ? row.row_json[LWW_COL] : null;
+                recentlyPushed.get(row.table_name)!.set(pkValues, { op: row.op, lww: lwwValue });
                 
                 if (row.op === 'D') {
                     const whereConds = m.pk.map((p, i) => `${ident(p)} = $${i + 1}`).join(" AND ");
@@ -84,11 +86,11 @@ export async function pushBatch(): Promise<number> {
             // Expire pushed keys after a timeout to prevent memory leaks if an echo is never received.
             setTimeout(() => {
                 const now = Date.now();
-                for (const [_tableName, pushedSet] of recentlyPushed.entries()) {
-                    for (const pk of pushedSet) {
+                for (const [_tableName, pushedMap] of recentlyPushed.entries()) {
+                    for (const pk of pushedMap.keys()) {
                          // This is a simplified example; a real implementation would store timestamps
-                         // and check them here. For now, we just clear the set.
-                         pushedSet.delete(pk);
+                         // and check them here. For now, we just clear the map entry.
+                         pushedMap.delete(pk);
                     }
                 }
             }, 10000); // 10-second timeout

@@ -10,28 +10,48 @@ let repl: LogicalReplicationService | null = null;
 
 async function localUpsert(table: string, row: Record<string, unknown>) {
     const m = meta.get(table)!;
-    await mainDb.exec(`SET LOCAL session_replication_role = 'replica'`);
     
-    const pkList = m.pk.map(ident).join(",");
-    const updSet = m.non.map(c => `${ident(c)} = EXCLUDED.${ident(c)}`).join(", ");
-    
-    await mainDb.query(`
-      INSERT INTO ${ident(table)}
-      SELECT * FROM json_populate_record(null::${ident(table)}, $1) s
-      ON CONFLICT (${pkList}) DO UPDATE
-        SET ${updSet}
-      WHERE ${ident(table)}.${ident(LWW_COL)} < EXCLUDED.${ident(LWW_COL)}
-    `, [JSON.stringify(row)]);
+    // Use a transaction to ensure the session variable is set only for this operation
+    await mainDb.exec('BEGIN');
+    try {
+        await mainDb.exec(`SET LOCAL app.sync.is_applying_remote_change = 'true'`);
+        
+        const pkList = m.pk.map(ident).join(",");
+        const updSet = m.non.map(c => `${ident(c)} = EXCLUDED.${ident(c)}`).join(", ");
+        
+        await mainDb.query(`
+          INSERT INTO ${ident(table)}
+          SELECT * FROM json_populate_record(null::${ident(table)}, $1) s
+          ON CONFLICT (${pkList}) DO UPDATE
+            SET ${updSet}
+          WHERE ${ident(table)}.${ident(LWW_COL)} < EXCLUDED.${ident(LWW_COL)}
+        `, [JSON.stringify(row)]);
+
+        await mainDb.exec('COMMIT');
+    } catch (err) {
+        await mainDb.exec('ROLLBACK');
+        throw err;
+    }
 }
 
 async function localDelete(table: string, pk: Record<string, unknown>) {
     const m = meta.get(table)!;
-    await mainDb.exec(`SET LOCAL session_replication_role = 'replica'`);
     
-    const whereConds = m.pk.map((p, i) => `${ident(p)} = $${i + 1}`).join(" AND ");
-    const values = m.pk.map(p => pk[p]);
-    
-    await mainDb.query(`DELETE FROM ${ident(table)} WHERE ${whereConds}`, values);
+    // Use a transaction to ensure the session variable is set only for this operation
+    await mainDb.exec('BEGIN');
+    try {
+        await mainDb.exec(`SET LOCAL app.sync.is_applying_remote_change = 'true'`);
+        
+        const whereConds = m.pk.map((p, i) => `${ident(p)} = $${i + 1}`).join(" AND ");
+        const values = m.pk.map(p => pk[p]);
+        
+        await mainDb.query(`DELETE FROM ${ident(table)} WHERE ${whereConds}`, values);
+
+        await mainDb.exec('COMMIT');
+    } catch (err) {
+        await mainDb.exec('ROLLBACK');
+        throw err;
+    }
 }
 
 async function handleWalMessage(log: any) {
@@ -51,13 +71,21 @@ async function handleWalMessage(log: any) {
     const m = meta.get(tableName)!;
 
     const pkValues = m.pk.map(col => String(rowData[col] || '')).join('|');
-    const pushedSet = recentlyPushed.get(tableName);
-    if (pushedSet?.has(pkValues)) {
-        pushedSet.delete(pkValues); // Consume the echo
-        if (pushedSet.size === 0) {
-            recentlyPushed.delete(tableName); // Clean up the table entry if the set is empty
+    const pushedInfo = recentlyPushed.get(tableName)?.get(pkValues);
+
+    if (pushedInfo) {
+        const incomingLww = rowData[LWW_COL];
+        // It's an echo if the operation is the same AND the LWW value is the same or older.
+        // For deletes, the LWW value is not applicable.
+        if (pushedInfo.op === log.tag.charAt(0).toUpperCase() &&
+            (pushedInfo.op === 'D' || (pushedInfo.lww && incomingLww <= pushedInfo.lww))) 
+        {
+            recentlyPushed.get(tableName)!.delete(pkValues); // Consume the echo
+            if (recentlyPushed.get(tableName)!.size === 0) {
+                recentlyPushed.delete(tableName);
+            }
+            return;
         }
-        return;
     }
 
     try {

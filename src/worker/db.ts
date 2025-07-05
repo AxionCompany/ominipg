@@ -20,11 +20,17 @@ export let mainDb: DatabaseClient;
 export let mainDbType: 'pglite' | 'postgres';
 export let syncPool: pg.Pool | null = null;
 
-// Track metadata about tables (primary keys, etc.)
-export const meta = new Map<string, { pk: string[]; non: string[] }>();
+/**
+ * In-memory metadata cache for table schemas (PKs, columns).
+ */
+export const meta = new Map<string, { pk: string[], non: string[] }>();
 
-// Track recently pushed changes to prevent echoes
-export const recentlyPushed = new Map<string, Set<string>>(); // table -> set of stringified primary keys
+/**
+ * In-memory cache to track recently pushed changes to prevent echo.
+ * The structure is: `Map<TableName, Map<PrimaryKey, { op: string, lww: any }>>`
+ * where `lww` is the value of the Last-Write-Wins column.
+ */
+export const recentlyPushed = new Map<string, Map<string, { op: string, lww: any }>>();
 
 
 /*───────────────── PGlite Adapter ──────────────────*/

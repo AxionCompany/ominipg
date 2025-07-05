@@ -1,3 +1,4 @@
+import "npm:pg@8.16.3";
 import { TypedEmitter } from 'npm:tiny-typed-emitter@2.1.0';
 import type { EdgeDBConnectionOptions, EdgeDBClientEvents } from './types.ts';
 import type { WorkerMsg, ResponseMsg, InitMsg, ExecMsg, SyncMsg, SyncSeqMsg, DiagnosticMsg, CloseMsg } from '../shared/types.ts';
@@ -74,8 +75,6 @@ export class EdgeDB extends TypedEmitter<EdgeDBClientEvents> {
 
     public static async connect(options: EdgeDBConnectionOptions): Promise<any> {
         const db = new EdgeDB(options);
-
-        // const { drizzle } = await import("drizzle-orm/node-postgres");
         
         // Create a custom driver for Drizzle
         const driver = {
@@ -98,7 +97,7 @@ export class EdgeDB extends TypedEmitter<EdgeDBClientEvents> {
                 if (rowMode === 'array' && rows.length > 0 && typeof rows[0] === 'object' && rows[0] !== null) {
                     const columnNames = Object.keys(rows[0]);
 
-                    // Drizzle needs this to map array indices to field names.
+                    // Drizzle needs this2 to map array indices to field names.
                     fields = columnNames.map((name, index) => ({
                         name,
                         dataTypeID: 0, // Drizzle doesn't seem to strictly need this for mapping.
@@ -125,7 +124,7 @@ export class EdgeDB extends TypedEmitter<EdgeDBClientEvents> {
         const initMsg = {
             type: 'init' as const,
             ...serializableOptions,
-            url: options.url || `file://edge_${Date.now()}.db`,
+            url: options.url || `:memory:`,
         };
         
         await db.requests.request<InitMsg>(initMsg, 60000); // Longer timeout for init
