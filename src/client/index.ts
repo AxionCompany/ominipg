@@ -1,8 +1,7 @@
-
-import "npm:pg@8.16.3";
 import { TypedEmitter } from 'npm:tiny-typed-emitter@2.1.0';
 import type { EdgeDBConnectionOptions, EdgeDBClientEvents } from './types.ts';
 import type { WorkerMsg, ResponseMsg, InitMsg, ExecMsg, SyncMsg, SyncSeqMsg, DiagnosticMsg, CloseMsg } from '../shared/types.ts';
+import { drizzle } from "npm:drizzle-orm@0.44.2/node-postgres";
 
 class RequestManager {
     private _id = 0;
@@ -76,7 +75,7 @@ export class EdgeDB extends TypedEmitter<EdgeDBClientEvents> {
     public static async connect(options: EdgeDBConnectionOptions): Promise<any> {
         const db = new EdgeDB(options);
 
-        const { drizzle } = await import("npm:drizzle-orm/node-postgres@0.44.2");
+        // const { drizzle } = await import("drizzle-orm/node-postgres");
         
         // Create a custom driver for Drizzle
         const driver = {

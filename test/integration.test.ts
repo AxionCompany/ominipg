@@ -2,8 +2,8 @@
 import { EdgeDB } from '../src/client/index.ts';
 import { assert, assertEquals } from "https://deno.land/std@0.217.0/assert/mod.ts";
 
-const DATABASE_URL = 'postgresql://...';
-const LOCAL_DB_PATH = 'standalone-db-lib/test/test.db';
+const DATABASE_URL = 'postgresql://postgres:2BIBLcw3bTgsJ76b@db.wycqhklavrdbablrkaeb.supabase.co:5432/postgres';
+const LOCAL_DB_PATH = 'test/test.db';
 
 const schemaDDL = [
     `CREATE OR REPLACE FUNCTION update_updated_at_column()
