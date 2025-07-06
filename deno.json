@@ -1,7 +1,7 @@
 {
     "name": "@oxian/ominipg",
     "description": "Postgres for all ",
-    "version": "0.0.5",
+    "version": "0.0.6",
     "author": "Ominipg",
     "license": "MIT",
     "exports": "./src/client/index.ts",

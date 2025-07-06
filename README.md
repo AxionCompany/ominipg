@@ -1,115 +1,128 @@
-# Ominipg - A Standalone Edge Database Library
+# Ominipg 🐘: The All-in-One PostgreSQL Toolkit for Deno
 
-A powerful, self-contained library for Deno that provides a type-safe, edge-compatible database solution with optional, real-time, bidirectional synchronization. It uses PGlite for local file-based storage and can sync with any standard PostgreSQL database.
+[![JSR](https://img.shields.io/badge/jsr-%40oxian%2Fominipg-blue?style=for-the-badge&logo=deno)](https://jsr.io/@oxian/ominipg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](./LICENSE)
+[![Deno 2.0+](https://img.shields.io/badge/deno-%5E2.0-brightgreen?logo=deno&style=for-the-badge)](https://deno.com)
 
-This library is designed to be run inside an Isolate, providing a robust database instance with its own dedicated worker thread.
+**Ominipg is the flexible, all-in-one toolkit for PostgreSQL in Deno.** Whether you need a simple local database, a powerful offline-first solution with real-time sync, or just a non-blocking client for your server, Ominipg adapts to your needs.
 
-## Key Features
+It runs the entire database connection in a dedicated worker, ensuring your application remains fast and responsive, no matter the task.
 
--   **Flexible Database Core:** Use a local, file-based PGlite database (`file://...`) for zero-dependency edge setups or connect directly to a remote PostgreSQL server (`postgres://...`).
--   **Bidirectional Synchronization:** Optionally enable real-time, two-way data sync between the local PGlite instance and a remote PostgreSQL database.
--   **Last-Write-Wins (LWW) Conflict Resolution:** Automatically resolves data conflicts during synchronization based on a configurable timestamp column (defaults to `updated_at`).
--   **Type-Safe Queries:** Integrates with **Drizzle ORM**, allowing you to write fully type-safe SQL queries against your schema.
--   **Automatic Schema Management:**
-    -   Applies your DDL statements on initialization.
-    -   Ensures the remote sync database schema matches the local schema.
-    -   Dynamically creates tables on the fly if they are discovered from the remote replication stream but don't exist locally.
--   **Isolated and Performant:** The entire database engine runs within its own dedicated Web Worker, preventing it from blocking the main application thread.
+---
 
-## Getting Started
+## ✨ One Library, Many Faces
 
-Using the library involves two main steps: defining your schema and connecting the client.
+Ominipg is designed to be your go-to database client, no matter the architecture. Pick the pattern that fits your project.
 
-### 1. Define Your Schema
+### 1. The Simple Local Database
+*Perfect for scripts, local development, and standalone applications.*
 
-Create one or more schema files (e.g., `db/schema.ts`). These files should export your Drizzle ORM schema definitions and an array of SQL DDL strings for table creation.
+Get the power of PostgreSQL without running a server. Ominipg uses PGlite to create a file-based database that's fast, reliable, and self-contained.
 
-**Example `db/schema.ts`:**
+```typescript
+const db = await Ominipg.connect({
+  url: 'file://./my-app.db', // Just a local file
+  schema: schema,
+  schemaSQL: schema.schemaDDL,
+});
+// db is ready for local queries!
+```
 
+### 2. The Syncing Edge Database
+*The ultimate solution for offline-first and edge applications.*
+
+Combine a local PGlite database with real-time, bidirectional synchronization to a remote PostgreSQL server. Work seamlessly offline and sync automatically when a connection is restored.
+
+```typescript
+const db = await Ominipg.connect({
+  url: 'file://./local-cache.db',
+  syncUrl: Deno.env.get('REMOTE_DATABASE_URL'), // Your remote Postgres
+  schema: schema,
+  schemaSQL: schema.schemaDDL,
+});
+// Local and remote data are now in sync!
+```
+
+### 3. The Non-Blocking Postgres Client
+*A modern, performant way to connect to any standard PostgreSQL database.*
+
+Use Ominipg as a proxy to your primary database. All connections and queries run in a background worker, preventing database operations from ever blocking your main application thread.
+
+```typescript
+const db = await Ominipg.connect({
+  url: Deno.env.get('PRIMARY_DATABASE_URL'), // Your standard Postgres
+  schema: schema,
+  schemaSQL: schema.schemaDDL,
+});
+// Now querying your remote DB without blocking the main thread!
+```
+
+## 💡 Core Features
+
+-   🚀 **Always Non-Blocking:** By running in a worker, Ominipg guarantees your main thread is always free for critical tasks.
+-   🛠️ **Choose Your Architecture:** From local-only to globally synced, Ominipg adapts to your project's needs without changing your code.
+-   🔒 **Fully Type-Safe with Drizzle:** Write queries with confidence. End-to-end type safety means you catch errors at compile time, not in production.
+-   🔄 **Intelligent Sync & Conflict Resolution:** For edge use cases, you get automatic Last-Write-Wins conflict resolution and real-time bidirectional sync.
+-   ⚙️ **Zero-Config Schema Management:** Define your schema once with Drizzle, and Ominipg handles the setup everywhere.
+
+
+## 🚀 Quick Start
+
+Define your schema using Drizzle ORM, then pass it to `Ominipg.connect()` with the URL for your chosen architecture.
+
+**`schema.ts`**
 ```typescript
 import { pgTable, serial, text, boolean, timestamp } from "drizzle-orm/pg-core";
 
-// Drizzle schema definition for the 'users' table
-export const users = pgTable('users', {
+// Define your table with Drizzle
+export const todos = pgTable('todos', {
   id: serial('id').primaryKey(),
-  name: text('name').notNull(),
-  email: text('email').unique(),
-  active: boolean('active').default(true),
-  updated_at: timestamp('updated_at').notNull().defaultNow(),
+  title: text('title').notNull(),
+  completed: boolean('completed').default(false),
+  updated_at: timestamp('updated_at').defaultNow(),
 });
 
-// SQL DDL for table creation (idempotent)
+// Create a matching SQL statement for table creation
 export const schemaDDL = [
-  `CREATE TABLE IF NOT EXISTS users (
+  `CREATE TABLE IF NOT EXISTS todos (
     id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE,
-    active BOOLEAN DEFAULT true,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    title TEXT NOT NULL,
+    completed BOOLEAN DEFAULT false,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
   )`,
-  // ... add other CREATE TABLE statements here
 ];
 ```
 
-### 2. Connect the Client
-
-In your application code, import and use `Ominipg.connect()` to initialize the database. This function returns a fully-featured Drizzle client instance, augmented with some useful methods.
-
+**`main.ts`**
 ```typescript
-import { Ominipg } from './path/to/standalone-db-lib/src/client/index.ts';
-import * as schema from './path/to/your/db/schema.ts';
+import { Ominipg } from 'jsr:@oxian/ominipg'; // Replace with your import path
+import * as schema from './schema.ts';
 
-// Database configuration
-const dbConfig = {
-    // The local PGlite database file path
-    url: 'file:///path/to/your/local/database.db',
-    
-    // (Optional) The remote PostgreSQL connection string for sync
-    syncUrl: 'postgresql://user:password@host:port/dbname',
-    
-    // The Drizzle schema object
-    schema: schema,
-    
-    // The DDL statements for table creation
-    schemaSQL: schema.schemaDDL,
-};
+// See "One Library, Many Faces" above for url/syncUrl examples
+const db = await Ominipg.connect({ /* ...your options... */ });
 
-// Connect to the database
-const db = await Ominipg.connect(dbConfig);
-
-// You can now use 'db' as a standard Drizzle client
-const allUsers = await db.select().from(schema.users);
-console.log(allUsers);
-
-// --- Custom Methods ---
-
-// Manually trigger a push of local changes to the remote
-const { pushed } = await db.sync();
-console.log(`Pushed ${pushed} changes.`);
-
-// Close the database connection and terminate the worker
-await db.close();
+// You can now use 'db' just like any other Drizzle client.
+const allTodos = await db.select().from(schema.todos);
+console.log(allTodos);
 ```
 
-## Connection Options
-
-The `Ominipg.connect(options)` method accepts the following properties in its options object:
+## ⚙️ Connection Options
 
 | Option              | Type           | Description                                                                                             |
 | ------------------- | -------------- | ------------------------------------------------------------------------------------------------------- |
-| `url`               | `string`       | Main database URL. Use `file://` for PGlite, `postgres://` for PostgreSQL. Defaults to in-memory.        |
-| `syncUrl`           | `string`       | (Optional) The remote PostgreSQL URL for bidirectional sync.                                            |
+| `url`               | `string`       | Main database URL. Use `file://` for local or `postgres://` for remote. Defaults to in-memory.          |
+| `syncUrl`           | `string`       | (Optional) The remote PostgreSQL URL for enabling bidirectional sync with a local `file://` DB.         |
 | `schema`            | `object`       | The Drizzle schema object containing your table definitions.                                            |
 | `schemaSQL`         | `string[]`     | An array of SQL DDL strings for schema creation.                                                        |
-| `edgeId`            | `string`       | (Optional) A unique identifier for this client instance. Helps prevent sync echoes.                     |
-| `lwwColumn`         | `string`       | (Optional) The column name for Last-Write-Wins conflict resolution. Defaults to `updated_at`.           |
-| `skipInitialSync`   | `boolean`      | (Optional) If true, skips the initial pull of data from the remote. Defaults to `false`.                |
+| `lwwColumn`         | `string`       | (Optional) The column for Last-Write-Wins conflict resolution. Defaults to `updated_at`.              |
+| `disableAutoPush`   | `boolean`      | (Optional) If `true`, disables automatic pushing of local changes. Use `db.sync()` to push manually. Defaults to `false`. |
 
-## How It Works
+---
 
-The library is composed of two main parts:
+## Contributing
 
--   **The Client (`src/client`):** This is the part you interact with in your application. It provides the Drizzle-compatible API and communicates with the worker.
--   **The Worker (`src/worker`):** This runs the actual PGlite database instance in a separate thread. It handles all SQL execution, schema management, and the complex logic for data synchronization using logical replication.
+Contributions are welcome! Please open an issue or submit a pull request.
 
-This architecture ensures that even complex database operations or network-intensive sync processes do not impact the performance of your main application code. 
+## License
+
+[MIT](./LICENSE) 
