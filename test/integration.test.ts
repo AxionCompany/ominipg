@@ -1,4 +1,4 @@
-import { EdgeDB } from '../src/client/index.ts';
+import { Ominipg } from '../src/client/index.ts';
 import { assert, assertEquals } from "jsr:@std/assert@1.0.13";
 
 const SYNC_DB_URL = Deno.env.get('SYNC_DB_URL')!;
@@ -34,7 +34,7 @@ Deno.test("E2E Sync Test", async (t) => {
     }
 
     // 1. Connect to the database
-    const db = await EdgeDB.connect({
+    const db = await Ominipg.connect({
         url: DB_URL,
         syncUrl: SYNC_DB_URL,
         schemaSQL: schemaDDL,
@@ -101,7 +101,7 @@ Deno.test("Initial Sync from Remote to Local", async (t) => {
     }
 
     // 2. Connect the client, which should trigger the initial sync
-    const db = await EdgeDB.connect({
+    const db = await Ominipg.connect({
         url: DB_URL,
         syncUrl: SYNC_DB_URL,
         schemaSQL: schemaDDL,
@@ -128,7 +128,7 @@ Deno.test("Initial Sync from Local to Remote", async (t) => {
     }
 
     // 2. Connect to the DB. The initial sync service will create the schema on the remote.
-    const db = await EdgeDB.connect({
+    const db = await Ominipg.connect({
         url: DB_URL,
         syncUrl: SYNC_DB_URL,
         schemaSQL: schemaDDL,

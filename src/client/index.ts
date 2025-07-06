@@ -1,6 +1,6 @@
 import "npm:pg@8.16.3";
 import { TypedEmitter } from 'npm:tiny-typed-emitter@2.1.0';
-import type { EdgeDBConnectionOptions, EdgeDBClientEvents } from './types.ts';
+import type { OminipgConnectionOptions, OminipgClientEvents } from './types.ts';
 import type { WorkerMsg, ResponseMsg, InitMsg, ExecMsg, SyncMsg, SyncSeqMsg, DiagnosticMsg, CloseMsg } from '../shared/types.ts';
 import { drizzle } from "npm:drizzle-orm@0.44.2/node-postgres";
 
@@ -8,7 +8,7 @@ class RequestManager {
     private _id = 0;
     private readonly pending = new Map<number, { resolve: (value: any) => void, reject: (reason?: any) => void, timeoutId: number }>();
     
-    constructor(private readonly worker: Worker, private readonly emitter: TypedEmitter<EdgeDBClientEvents>) {
+    constructor(private readonly worker: Worker, private readonly emitter: TypedEmitter<OminipgClientEvents>) {
         this.worker.addEventListener("message", this.handleMessage.bind(this));
     }
 
@@ -59,12 +59,12 @@ class RequestManager {
     }
 }
 
-export class EdgeDB extends TypedEmitter<EdgeDBClientEvents> {
+export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     private readonly worker: Worker;
     private readonly requests: RequestManager;
     private drizzle: any; // Drizzle client
 
-    private constructor(options: EdgeDBConnectionOptions) {
+    private constructor(options: OminipgConnectionOptions) {
         super();
         this.worker = new Worker(
             new URL('../worker/index.ts', import.meta.url).href, 
@@ -73,8 +73,8 @@ export class EdgeDB extends TypedEmitter<EdgeDBClientEvents> {
         this.requests = new RequestManager(this.worker, this);
     }
 
-    public static async connect(options: EdgeDBConnectionOptions): Promise<any> {
-        const db = new EdgeDB(options);
+    public static async connect(options: OminipgConnectionOptions): Promise<any> {
+        const db = new Ominipg(options);
         
         // Create a custom driver for Drizzle
         const driver = {

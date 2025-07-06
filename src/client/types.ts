@@ -1,5 +1,5 @@
 
-export interface EdgeDBConnectionOptions {
+export interface OminipgConnectionOptions {
     /**
      * The URL of the main database.
      * Use 'file://' for a local PGlite database or 'postgres://' for a remote PostgreSQL server.
@@ -57,7 +57,7 @@ export interface EdgeDBConnectionOptions {
     schema?: Record<string, any>;
 }
 
-export interface EdgeDBClientEvents {
+export interface OminipgClientEvents {
     'connected': () => void;
     'sync:start': () => void;
     'sync:end': (details: { pushed: number }) => void;

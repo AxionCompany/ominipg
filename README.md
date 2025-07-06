@@ -1,4 +1,4 @@
-# Standalone Edge Database Library
+# Ominipg - A Standalone Edge Database Library
 
 A powerful, self-contained library for Deno that provides a type-safe, edge-compatible database solution with optional, real-time, bidirectional synchronization. It uses PGlite for local file-based storage and can sync with any standard PostgreSQL database.
 
@@ -53,10 +53,10 @@ export const schemaDDL = [
 
 ### 2. Connect the Client
 
-In your application code, import and use `EdgeDB.connect()` to initialize the database. This function returns a fully-featured Drizzle client instance, augmented with some useful methods.
+In your application code, import and use `Ominipg.connect()` to initialize the database. This function returns a fully-featured Drizzle client instance, augmented with some useful methods.
 
 ```typescript
-import { EdgeDB } from './path/to/standalone-db-lib/src/client/index.ts';
+import { Ominipg } from './path/to/standalone-db-lib/src/client/index.ts';
 import * as schema from './path/to/your/db/schema.ts';
 
 // Database configuration
@@ -75,7 +75,7 @@ const dbConfig = {
 };
 
 // Connect to the database
-const db = await EdgeDB.connect(dbConfig);
+const db = await Ominipg.connect(dbConfig);
 
 // You can now use 'db' as a standard Drizzle client
 const allUsers = await db.select().from(schema.users);
@@ -93,7 +93,7 @@ await db.close();
 
 ## Connection Options
 
-The `EdgeDB.connect(options)` method accepts the following properties in its options object:
+The `Ominipg.connect(options)` method accepts the following properties in its options object:
 
 | Option              | Type           | Description                                                                                             |
 | ------------------- | -------------- | ------------------------------------------------------------------------------------------------------- |
