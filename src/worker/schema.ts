@@ -9,14 +9,12 @@ import pg from 'npm:pg@8.16.3';
  * @param tableName The name of the table to attach the trigger to.
  */
 async function ensureTrigger(tableName: string) {
-    console.log(`[Trigger] Attaching trigger to '${tableName}'...`);
     try {
         await mainDb.exec(`
           CREATE TRIGGER outbox_trigger_${tableName}
             AFTER INSERT OR UPDATE OR DELETE ON ${ident(tableName)}
             FOR EACH ROW EXECUTE FUNCTION outbox_trigger_fn()
         `);
-        console.log(`[Trigger] Successfully attached trigger to '${tableName}'.`);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         // It's okay if the trigger already exists.
@@ -31,7 +29,6 @@ async function ensureTrigger(tableName: string) {
  * This is only necessary for PGlite, as PostgreSQL uses logical replication.
  */
 async function ensureAllTriggersExist() {
-    console.log('Ensuring all user tables have outbox triggers...');
     const tablesResult = await mainDb.query(`
       SELECT tablename FROM pg_tables 
       WHERE schemaname = 'public' 
@@ -130,7 +127,6 @@ async function createSyncInfrastructure() {
  * @param includeSyncInfrastructure Whether to create the sync tables and triggers.
  */
 export async function bootstrapSchema(ddl: string[], includeSyncInfrastructure: boolean) {
-    console.log("Bootstrapping database schema...");
     
     for (const stmt of ddl) {
         try {
@@ -145,7 +141,6 @@ export async function bootstrapSchema(ddl: string[], includeSyncInfrastructure: 
         await createSyncInfrastructure();
     }
 
-    console.log("Schema bootstrap complete.");
 }
 
 /**
@@ -154,7 +149,6 @@ export async function bootstrapSchema(ddl: string[], includeSyncInfrastructure: 
 export async function ensureRemoteSchema(ddl: string[]) {
     if (!syncPool || ddl.length === 0) return;
     
-    console.log("Ensuring remote schema is up-to-date...");
     const client = await syncPool.connect();
     try {
         await client.query('BEGIN');
@@ -183,7 +177,6 @@ export async function ensureRemoteSchema(ddl: string[]) {
 export async function createTableFromRemote(client: pg.PoolClient, tableName: string) {
     if (!syncPool) throw new Error("Cannot create table from remote: no sync pool available.");
 
-    console.log(`Attempting to create table '${tableName}' from remote schema...`);
     try {
         // --- FIX: Create sequences before creating the table ---
         const sequencesResult = await client.query(`
@@ -244,13 +237,10 @@ export async function createTableFromRemote(client: pg.PoolClient, tableName: st
         
         // Execute locally
         await mainDb.exec(createTableSQL);
-        console.log(`Successfully created table '${tableName}' locally.`);
 
         // If using PGlite, add the outbox trigger
         if (mainDbType === 'pglite') {
-            console.log(`[Schema] Main DB is PGlite, ensuring trigger for '${tableName}'.`);
             await ensureTrigger(tableName);
-            console.log(`[Schema] Trigger ensured for '${tableName}'.`);
         }
 
         // Invalidate meta cache for this table
@@ -260,7 +250,6 @@ export async function createTableFromRemote(client: pg.PoolClient, tableName: st
         // Handle race condition where table was created by another process
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes("already exists")) {
-            console.log(`Table '${tableName}' was created by another process, continuing.`);
             return;
         }
         console.error(`Failed to create table '${tableName}' from remote:`, error);

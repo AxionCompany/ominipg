@@ -13,7 +13,6 @@ class RequestManager {
     }
 
     private handleMessage(event: MessageEvent<ResponseMsg>) {
-        console.log('--- CLIENT GOT MESSAGE ---', event.data);
         const msg = event.data;
         const reqId = msg.reqId;
 
@@ -80,7 +79,6 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         const driver = {
             // Drizzle can pass a string or a complex object. We only want the serializable parts.
             query: async (query: string | { text: string, values?: any[], rowMode?: string }, params: any[]) => {
-                console.log('--- DRIVER RECEIVED ---', { query, params });
                 
                 // The SQL query is always in `query.text` or `query` itself.
                 const sql = typeof query === 'string' ? query : query.text;

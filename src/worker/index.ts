@@ -10,13 +10,11 @@ import { getDiagnosticInfo } from './diagnostics.ts';
 
 // Simple postMessage wrapper
 const post = (msg: ResponseMsg) => {
-    console.log('--- WORKER POSTING MESSAGE ---', msg);
     self.postMessage(msg);
 };
 
 // Main worker message listener
 self.addEventListener("message", async (e: MessageEvent<WorkerMsg>) => {
-    console.log('--- WORKER GOT MESSAGE ---', e.data);
     try {
         const m = e.data;
         switch (m.type) {
@@ -53,7 +51,6 @@ self.addEventListener("message", async (e: MessageEvent<WorkerMsg>) => {
             }
         }
     } catch (err) {
-        console.log('--- WORKER ERROR ---', err);
         post({
             type: "error",
             reqId: "reqId" in e.data ? e.data.reqId : undefined,

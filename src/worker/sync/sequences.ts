@@ -35,7 +35,6 @@ export async function synchronizeTableSequences(remoteClient: pg.PoolClient, tab
 export async function synchronizeSequences(): Promise<number> {
     if (!syncPool) return 0;
     
-    console.log("Synchronizing all sequences...");
     const client = await syncPool.connect();
     try {
         const tablesResult = await mainDb.query(`
@@ -46,8 +45,7 @@ export async function synchronizeSequences(): Promise<number> {
         for (const tableRow of tablesResult.rows) {
             await synchronizeTableSequences(client, tableRow.tablename);
         }
-        
-        console.log(`Sequence synchronization complete for ${tablesResult.rows.length} tables.`);
+    
         return tablesResult.rows.length;
 
     } finally {

@@ -44,14 +44,11 @@ async function localUpsert(table: string, row: Record<string, unknown>) {
 export async function performInitialSync(syncFromTimestamp?: string) {
     if (!syncPool) return;
 
-    console.log("Starting initial data sync...");
     const client = await syncPool.connect();
     try {
-        console.log("[Initial Sync] About to query remote for table list...");
         const tablesResult = await client.query(`
             SELECT tablename FROM pg_tables WHERE schemaname = 'public'
         `);
-        console.log(`[Initial Sync] Found ${tablesResult.rows.length} remote tables.`);
 
         await mainDb.exec(`SET session_replication_role = 'replica'`);
 
@@ -59,19 +56,14 @@ export async function performInitialSync(syncFromTimestamp?: string) {
             const tableName = tableRow.tablename;
             if (tableName.startsWith('_')) continue;
 
-            console.log(`[Initial Sync] Processing table: ${tableName}`);
             try {
-                console.log(`[Initial Sync] 1/6: Ensuring table '${tableName}' exists locally...`);
                 await createTableFromRemote(client, tableName);
 
-                console.log(`[Initial Sync] 2/6: Ensuring remote metadata for '${tableName}'...`);
                 await ensureMeta(tableName, client);
 
-                console.log(`[Initial Sync] 3/6: Refreshing local metadata for '${tableName}'...`);
                 meta.delete(tableName);
                 await ensureMeta(tableName);
 
-                console.log(`[Initial Sync] 4/6: Querying remote data for '${tableName}'...`);
                 let query = `SELECT * FROM ${ident(tableName)}`;
                 const params: any[] = [];
                 if (syncFromTimestamp) {
@@ -80,15 +72,11 @@ export async function performInitialSync(syncFromTimestamp?: string) {
                 }
                 
                 const dataResult = await client.query(query, params);
-                console.log(`[Initial Sync] 5/6: Upserting ${dataResult.rows.length} rows for '${tableName}'...`);
                 for (const row of dataResult.rows) {
                     await localUpsert(tableName, row);
                 }
 
-                console.log(`[Initial Sync] 6/6: Synchronizing sequences for '${tableName}'...`);
                 await synchronizeTableSequences(client, tableName);
-
-                console.log(`[Initial Sync] Finished table '${tableName}'. Synced ${dataResult.rows.length} rows.`);
 
             } catch (tableError) {
                 console.error(`Failed to sync table '${tableName}':`, tableError);
@@ -103,5 +91,4 @@ export async function performInitialSync(syncFromTimestamp?: string) {
         await mainDb.exec(`SET session_replication_role = 'origin'`);
         client.release();
     }
-    console.log("Initial data sync complete.");
 } 

@@ -13,8 +13,6 @@ import { performInitialSync } from './initial.ts';
 export async function startSyncServices(cfg: InitMsg) {
     if (!syncPool) return;
 
-    console.log("Starting synchronization services...");
-
     // Ensure remote schema exists before starting sync
     await ensureRemoteSchema(cfg.schemaSQL ?? []);
 
@@ -32,8 +30,6 @@ export async function startSyncServices(cfg: InitMsg) {
             pushBatch().catch(err => console.error("Auto-push failed:", err));
         });
     }
-
-    console.log("Synchronization services started.");
 }
 
 /**
@@ -41,8 +37,6 @@ export async function startSyncServices(cfg: InitMsg) {
  */
 export async function stopSyncServices() {
     if (!syncPool) return;
-    
-    console.log("Stopping synchronization services...");
+
     await stopPuller();
-    console.log("Synchronization services stopped.");
 } 

@@ -97,7 +97,6 @@ async function handleWalMessage(log: any) {
     } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         if (msg.includes('does not exist')) {
-            console.log(`Table '${tableName}' not found locally, creating from remote...`);
             if (syncPool) {
                 const client = await syncPool.connect();
                 try {
@@ -111,7 +110,6 @@ async function handleWalMessage(log: any) {
             }
 
             // Retry the operation after creating the table
-            console.log(`Retrying operation for table '${tableName}' after creation.`);
             if (isDelete) {
                 await localDelete(tableName, rowData);
             } else {
@@ -148,18 +146,14 @@ export async function startPuller(cfg: InitMsg) {
             for (const oldSlot of oldSlotsResult.rows) {
                 try {
                     await client.query(`SELECT pg_drop_replication_slot($1)`, [oldSlot.slot_name]);
-                    console.log(`Cleaned up old inactive replication slot: ${oldSlot.slot_name}`);
                 } catch (e) {
                     const message = e instanceof Error ? e.message : String(e);
-                    console.warn(`Could not drop old slot ${oldSlot.slot_name}:`, message);
+                    console.error(`Could not drop old slot ${oldSlot.slot_name}:`, message);
                 }
             }
             // Now, try to create the new slot
             await client.query(`SELECT pg_create_logical_replication_slot($1, 'pgoutput')`, [slot]);
-            console.log(`Created new replication slot: ${slot}`);
-        } else {
-            console.log(`Replication slot ${slot} already exists.`);
-        }
+        } 
 
     } catch(err) {
         console.error("Failed to ensure publication/slot:", err);
@@ -178,7 +172,6 @@ export async function startPuller(cfg: InitMsg) {
     // Wrap the subscription in a promise that resolves when replication starts
     const started = new Promise<void>((resolve, reject) => {
         repl!.on('start', () => {
-            console.log("Logical replication started.");
             resolve();
         });
         repl!.on('error', (err) => {
@@ -203,11 +196,9 @@ export async function startPuller(cfg: InitMsg) {
     // Wait only for the 'start' event before returning
     await started;
 
-    console.log(`Subscribed to publication '${pubName}' in slot '${slot}'.`);
 }
 
 export async function stopPuller() {
     await repl?.stop();
     repl = null;
-    console.log("Replication puller stopped.");
 } 

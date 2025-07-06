@@ -16,9 +16,7 @@ export let LWW_COL: string = "updated_at";
  * This is the main entry point for starting the service.
  * @param cfg The initialization configuration.
  */
-export async function boot(cfg: InitMsg) {
-    console.log("Booting database worker...");
-    
+export async function boot(cfg: InitMsg) {    
     EDGE_ID = cfg.edgeId || crypto.randomUUID();
     LWW_COL = cfg.lwwColumn || "updated_at";
 
@@ -32,19 +30,13 @@ export async function boot(cfg: InitMsg) {
     // 3. Start synchronization services if configured
     if (syncPool) {
         await startSyncServices(cfg);
-    } else {
-        console.log("No sync URL provided. Running in standalone mode.");
     }
-
-    console.log("Database worker booted successfully.");
 }
 
 /**
  * Gracefully shuts down all services and connections.
  */
 export async function shutdown() {
-    console.log("Shutting down database worker...");
     await stopSyncServices();
     await closeConnections();
-    console.log("Shutdown complete.");
 } 

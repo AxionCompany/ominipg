@@ -57,7 +57,6 @@ class PGliteAdapter implements DatabaseClient {
 
 async function initializePGlite(url: string): Promise<DatabaseClient> {
     const dbPath = url.replace('file://', '');
-    console.log(`Initializing PGlite at: ${dbPath}`);
     try {
         const pglite = new PGlite(dbPath);
         return new PGliteAdapter(pglite);
@@ -98,12 +97,10 @@ class PostgresAdapter implements DatabaseClient {
 }
 
 async function initializePostgreSQL(url:string): Promise<DatabaseClient> {
-    console.log('Initializing PostgreSQL connection...');
     const pool = new pg.Pool({ connectionString: url, max: 5 });
     const client = await pool.connect();
     try {
         await client.query('SELECT 1'); // Test connection
-        console.log('PostgreSQL connection established.');
         return new PostgresAdapter(pool);
     } finally {
         client.release();
@@ -117,7 +114,6 @@ async function initializePostgreSQL(url:string): Promise<DatabaseClient> {
  */
 export async function initConnections(cfg: InitMsg) {
     mainDbType = detectDatabaseType(cfg.url);
-    console.log(`Initializing main database (${mainDbType})...`);
     mainDb = mainDbType === 'pglite'
         ? await initializePGlite(cfg.url)
         : await initializePostgreSQL(cfg.url);
@@ -126,7 +122,6 @@ export async function initConnections(cfg: InitMsg) {
         if (detectDatabaseType(cfg.syncUrl) !== 'postgres') {
             throw new Error('syncUrl must be a PostgreSQL connection string (postgres://)');
         }
-        console.log('Initializing sync database connection...');
         syncPool = new pg.Pool({ connectionString: cfg.syncUrl, max: 1 });
     }
 }
@@ -145,5 +140,4 @@ export async function exec(sql: string, params?: unknown[]): Promise<any[]> {
 export async function closeConnections() {
     if (syncPool) await syncPool.end();
     if (mainDb) await mainDb.close();
-    console.log('All database connections closed.');
 } 

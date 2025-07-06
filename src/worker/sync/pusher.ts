@@ -56,7 +56,6 @@ export async function pushBatch(): Promise<number> {
         await client.query('BEGIN');
         try {
             for (const row of outboxResult.rows) {
-                console.log('Pushing change:', JSON.stringify(row, null, 2));
                 await ensureMeta(row.table_name);
                 const m = meta.get(row.table_name)!;
 
@@ -95,7 +94,6 @@ export async function pushBatch(): Promise<number> {
                 }
             }, 10000); // 10-second timeout
 
-            console.log(`Pushed ${outboxResult.rows.length} changes.`);
             return outboxResult.rows.length;
 
         } catch (err) {
