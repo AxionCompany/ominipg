@@ -6,6 +6,7 @@
  */
 
 import { Ominipg, withDrizzle } from '../src/client/index.ts';
+import { drizzle } from 'npm:drizzle-orm/pg-proxy';
 import { pgTable, serial, varchar, integer, timestamp } from 'npm:drizzle-orm/pg-core';
 import { lt } from 'npm:drizzle-orm';
 
@@ -36,16 +37,16 @@ export async function example() {
 
     // 2. Create Drizzle adapter using the built-in helper
     // Auto-import version (async)
-    const db = await withDrizzle(ominipg, { users });
-    
+    const db = await withDrizzle(ominipg, drizzle, { users });
+
     // 3. Use Drizzle syntax
     await db.insert(users).values({ name: 'Alice', age: 30 });
     await db.insert(users).values({ name: 'Bob', age: 25 });
-    
+
     // Query with Drizzle
     const allUsers = await db.select().from(users);
     console.log('All users:', allUsers);
-    
+
     // Filter with Drizzle
     const youngUsers = await db.select().from(users).where(lt(users.age, 30));
     console.log('Young users:', youngUsers);
@@ -57,7 +58,7 @@ export async function example() {
     // Ominipg-specific methods work too
     const diagnostic = await db.getDiagnosticInfo();
     console.log('Database info:', diagnostic);
-    
+
     await db.close();
 }
 
