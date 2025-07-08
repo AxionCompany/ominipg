@@ -208,7 +208,8 @@ export function withDrizzle(
         return createDrizzleAdapter(ominipgInstance, drizzleFactoryOrSchema as (callback: any, config?: any) => any, schema);
     } else {
         // Version 2: Auto-import drizzle (async)
-        return createDrizzleAdapterAsync(ominipgInstance, drizzleFactoryOrSchema as Record<string, any> | undefined);
+        throw new Error('Auto-import of drizzle is not supported yet. Please use the explicit import: import { drizzle } from "npm:drizzle-orm/pg-proxy";');
+        // return createDrizzleAdapterAsync(ominipgInstance, drizzleFactoryOrSchema as Record<string, any> | undefined);
     }
 }
 
@@ -269,20 +270,20 @@ function createDrizzleAdapter(
     });
 }
 
-async function createDrizzleAdapterAsync(
-    ominipgInstance: Ominipg,
-    schema?: Record<string, any>
-) {
-    try {
-        // Try to dynamically import drizzle
-        const { drizzle } = await import('npm:drizzle-orm@0.44.2/pg-proxy');
-        return createDrizzleAdapter(ominipgInstance, drizzle, schema);
-    } catch (error) {
-        throw new Error(
-            'Failed to import drizzle-orm. Please install it explicitly:\n' +
-            'import { drizzle } from "npm:drizzle-orm/pg-proxy";\n' +
-            'Then use: withDrizzle(ominipg, drizzle, schema)\n\n' +
-            `Original error: ${error instanceof Error ? error.message : String(error)}`
-        );
-    }
-} 
+// async function createDrizzleAdapterAsync(
+//     ominipgInstance: Ominipg,
+//     schema?: Record<string, any>
+// ) {
+//     try {
+//         // Try to dynamically import drizzle
+//         const { drizzle } = await import('npm:drizzle-orm@0.44.2/pg-proxy');
+//         return createDrizzleAdapter(ominipgInstance, drizzle, schema);
+//     } catch (error) {
+//         throw new Error(
+//             'Failed to import drizzle-orm. Please install it explicitly:\n' +
+//             'import { drizzle } from "npm:drizzle-orm/pg-proxy";\n' +
+//             'Then use: withDrizzle(ominipg, drizzle, schema)\n\n' +
+//             `Original error: ${error instanceof Error ? error.message : String(error)}`
+//         );
+//     }
+// } 
