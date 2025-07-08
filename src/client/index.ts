@@ -2,7 +2,6 @@ import "npm:pg@8.16.3";
 import { TypedEmitter } from 'npm:tiny-typed-emitter@2.1.0';
 import type { OminipgConnectionOptions, OminipgClientEvents } from './types.ts';
 import type { WorkerMsg, ResponseMsg, InitMsg, ExecMsg, SyncMsg, SyncSeqMsg, DiagnosticMsg, CloseMsg } from '../shared/types.ts';
-import { drizzle } from "npm:drizzle-orm@0.44.2/node-postgres";
 
 class RequestManager {
     private _id = 0;
@@ -61,7 +60,6 @@ class RequestManager {
 export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     private readonly worker: Worker;
     private readonly requests: RequestManager;
-    private drizzle: any; // Drizzle client
 
     private constructor(options: OminipgConnectionOptions) {
         super();
@@ -72,79 +70,35 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         this.requests = new RequestManager(this.worker, this);
     }
 
-    public static async connect(options: OminipgConnectionOptions): Promise<any> {
+    public static async connect(options: OminipgConnectionOptions): Promise<Ominipg> {
         const db = new Ominipg(options);
         
-        // Create a custom driver for Drizzle
-        const driver = {
-            // Drizzle can pass a string or a complex object. We only want the serializable parts.
-            query: async (query: string | { text: string, values?: any[], rowMode?: string }, params: any[]) => {
-                
-                // The SQL query is always in `query.text` or `query` itself.
-                const sql = typeof query === 'string' ? query : query.text;
-                // The parameters are always in the `params` array for `node-postgres`.
-                const queryParams = params || [];
-                const rowMode = (typeof query === 'object' && query.rowMode) || 'object';
-
-                const { rows } = await db.queryRaw(sql, queryParams);
-
-                let processedRows = rows;
-                let fields: any[] = [];
-
-                // If Drizzle expects array mode, convert our object rows to arrays.
-                if (rowMode === 'array' && rows.length > 0 && typeof rows[0] === 'object' && rows[0] !== null) {
-                    const columnNames = Object.keys(rows[0]);
-
-                    // Drizzle needs this2 to map array indices to field names.
-                    fields = columnNames.map((name, index) => ({
-                        name,
-                        dataTypeID: 0, // Drizzle doesn't seem to strictly need this for mapping.
-                        columnID: index,
-                    }));
-
-                    // Convert each row object into an array of values in the correct order.
-                    processedRows = rows.map(row => columnNames.map(col => (row as any)[col]));
-                }
-
-                return {
-                    rows: processedRows,
-                    rowCount: processedRows.length,
-                    command: sql.trim().split(' ')[0].toUpperCase(),
-                    fields,
-                };
-            }
-        };
-
-        db.drizzle = drizzle(driver, { schema: options.schema });
-        
-        const { schema, ...serializableOptions } = options;
-
         const initMsg = {
             type: 'init' as const,
-            ...serializableOptions,
+            ...options,
             url: options.url || `:memory:`,
         };
         
         await db.requests.request<InitMsg>(initMsg, 60000); // Longer timeout for init
         db.emit('connected');
         
-        Object.assign(db.drizzle, {
-            sync: db.sync.bind(db),
-            syncSequences: db.syncSequences.bind(db),
-            getDiagnosticInfo: db.getDiagnosticInfo.bind(db),
-            close: db.close.bind(db),
-            queryRaw: db.queryRaw.bind(db),
-        });
-
-        return db.drizzle;
+        return db;
     }
 
     /**
-     * Executes a raw SQL query. This is used by the Drizzle driver.
+     * Executes a raw SQL query. This is the core method that can be used
+     * directly or wrapped by ORMs like Drizzle.
      */
-    public async queryRaw(sql: string, params?: unknown[]): Promise<{ rows: any[] }> {
+    public async query(sql: string, params?: unknown[]): Promise<{ rows: any[] }> {
         const message: Omit<ExecMsg, "reqId"> = { type: 'exec', sql, params };
         return await this.requests.request<{ rows: any[] }>(message);
+    }
+
+    /**
+     * @deprecated Use query() instead. This method is kept for backward compatibility.
+     */
+    public async queryRaw(sql: string, params?: unknown[]): Promise<{ rows: any[] }> {
+        return this.query(sql, params);
     }
 
     /**
@@ -183,5 +137,152 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         this.requests.post(message);
         this.worker.terminate();
         this.emit('close');
+    }
+}
+
+/**
+ * Creates a Drizzle ORM adapter for an Ominipg instance.
+ * This allows you to use Drizzle syntax while leveraging Ominipg's features.
+ * 
+ * @param ominipgInstance - The Ominipg instance to wrap
+ * @param drizzleFactory - The drizzle function from 'drizzle-orm/pg-proxy'
+ * @param schema - Optional Drizzle schema object
+ * @returns A Drizzle instance with Ominipg methods added
+ * 
+ * @example
+ * ```typescript
+ * import { Ominipg, withDrizzle } from 'jsr:@oxian/ominipg';
+ * import { drizzle } from 'npm:drizzle-orm/pg-proxy';
+ * 
+ * const ominipg = await Ominipg.connect({...});
+ * const db = withDrizzle(ominipg, drizzle, schema);
+ * 
+ * // Use Drizzle syntax
+ * const users = await db.select().from(userTable);
+ * 
+ * // Ominipg methods are still available
+ * await db.sync();
+ * ```
+ */
+export function withDrizzle(
+    ominipgInstance: Ominipg, 
+    drizzleFactory: (callback: any, config?: any) => any,
+    schema?: Record<string, any>
+): any;
+
+/**
+ * Creates a Drizzle ORM adapter for an Ominipg instance (with automatic drizzle import).
+ * This version automatically imports drizzle-orm for convenience.
+ * 
+ * @param ominipgInstance - The Ominipg instance to wrap
+ * @param schema - Optional Drizzle schema object
+ * @returns A Promise resolving to a Drizzle instance with Ominipg methods added
+ * 
+ * @example
+ * ```typescript
+ * import { Ominipg, withDrizzle } from 'jsr:@oxian/ominipg';
+ * 
+ * const ominipg = await Ominipg.connect({...});
+ * const db = await withDrizzle(ominipg, schema);
+ * 
+ * // Use Drizzle syntax
+ * const users = await db.select().from(userTable);
+ * 
+ * // Ominipg methods are still available
+ * await db.sync();
+ * ```
+ */
+export function withDrizzle(
+    ominipgInstance: Ominipg, 
+    schema?: Record<string, any>
+): Promise<any>;
+
+export function withDrizzle(
+    ominipgInstance: Ominipg, 
+    drizzleFactoryOrSchema?: ((callback: any, config?: any) => any) | Record<string, any>,
+    schema?: Record<string, any>
+): any | Promise<any> {
+    // Check if first argument is the drizzle factory function
+    if (typeof drizzleFactoryOrSchema === 'function') {
+        // Version 1: User provided drizzle factory
+        return createDrizzleAdapter(ominipgInstance, drizzleFactoryOrSchema as (callback: any, config?: any) => any, schema);
+    } else {
+        // Version 2: Auto-import drizzle (async)
+        return createDrizzleAdapterAsync(ominipgInstance, drizzleFactoryOrSchema as Record<string, any> | undefined);
+    }
+}
+
+function createDrizzleAdapter(
+    ominipgInstance: Ominipg,
+    drizzleFactory: (callback: any, config?: any) => any,
+    schema?: Record<string, any>
+) {
+    const drizzleProxy = drizzleFactory(
+        async (sql: string, params: any[], method?: 'run' | 'all' | 'values' | 'get' | 'execute') => {
+            try {
+                const result = await ominipgInstance.query(sql, params);
+                
+                // Handle different return formats based on method
+                if (method === 'get') {
+                    // For 'get' method, return single row as string[]
+                    const row = result.rows[0];
+                    if (row && typeof row === 'object') {
+                        return { rows: Object.values(row) };
+                    }
+                    return { rows: [] };
+                } else if (method === 'all') {
+                    // For 'all' method, convert objects to arrays (string[][])
+                    if (result.rows.length > 0 && typeof result.rows[0] === 'object') {
+                        const columnNames = Object.keys(result.rows[0]);
+                        const arrayRows = result.rows.map(row => 
+                            columnNames.map(col => (row as any)[col])
+                        );
+                        return { rows: arrayRows };
+                    }
+                    return { rows: [] };
+                } else {
+                    // For other methods ('run', 'values', 'execute', or undefined), return objects as-is
+                    return { rows: result.rows };
+                }
+            } catch (error) {
+                console.error('Database query error:', error);
+                throw error;
+            }
+        },
+        { schema }
+    );
+
+    // Add Ominipg-specific methods to the Drizzle instance
+    return Object.assign(drizzleProxy, {
+        // Ominipg sync methods
+        sync: ominipgInstance.sync.bind(ominipgInstance),
+        syncSequences: ominipgInstance.syncSequences.bind(ominipgInstance),
+        getDiagnosticInfo: ominipgInstance.getDiagnosticInfo.bind(ominipgInstance),
+        close: ominipgInstance.close.bind(ominipgInstance),
+        
+        // Raw query access
+        queryRaw: ominipgInstance.query.bind(ominipgInstance),
+        query: ominipgInstance.query.bind(ominipgInstance),
+        
+        // Access to the underlying Ominipg instance
+        _ominipg: ominipgInstance,
+    });
+}
+
+async function createDrizzleAdapterAsync(
+    ominipgInstance: Ominipg,
+    schema?: Record<string, any>
+) {
+    try {
+        // Try to dynamically import drizzle
+        const { drizzle } = await import('npm:drizzle-orm@0.44.2/pg-proxy');
+        return createDrizzleAdapter(ominipgInstance, drizzle, schema);
+    } catch (error) {
+        throw new Error(
+            'Failed to import drizzle-orm. Please install it explicitly:\n' +
+            'import { drizzle } from "npm:drizzle-orm/pg-proxy";\n' +
+            'Then use: withDrizzle(ominipg, drizzle, schema)\n\n' +
+            `Original error: ${error instanceof Error ? error.message : String(error)}`
+        );
     }
 } 

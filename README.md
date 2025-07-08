@@ -22,8 +22,7 @@ Get the power of PostgreSQL without running a server. Ominipg uses PGlite to cre
 ```typescript
 const db = await Ominipg.connect({
   url: 'file://./my-app.db', // Just a local file
-  schema: schema,
-  schemaSQL: schema.schemaDDL,
+  schemaSQL: ['CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)']
 });
 // db is ready for local queries!
 ```
@@ -37,8 +36,7 @@ Combine a local PGlite database with real-time, bidirectional synchronization to
 const db = await Ominipg.connect({
   url: 'file://./local-cache.db',
   syncUrl: Deno.env.get('REMOTE_DATABASE_URL'), // Your remote Postgres
-  schema: schema,
-  schemaSQL: schema.schemaDDL,
+  schemaSQL: ['CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)']
 });
 // Local and remote data are now in sync!
 ```
@@ -51,8 +49,7 @@ Use Ominipg as a proxy to your primary database. All connections and queries run
 ```typescript
 const db = await Ominipg.connect({
   url: Deno.env.get('PRIMARY_DATABASE_URL'), // Your standard Postgres
-  schema: schema,
-  schemaSQL: schema.schemaDDL,
+  schemaSQL: ['CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)']
 });
 // Now querying your remote DB without blocking the main thread!
 ```
@@ -61,20 +58,93 @@ const db = await Ominipg.connect({
 
 -   🚀 **Always Non-Blocking:** By running in a worker, Ominipg guarantees your main thread is always free for critical tasks.
 -   🛠️ **Choose Your Architecture:** From local-only to globally synced, Ominipg adapts to your project's needs without changing your code.
--   🔒 **Fully Type-Safe with Drizzle:** Write queries with confidence. End-to-end type safety means you catch errors at compile time, not in production.
+-   🎯 **ORM-Agnostic with Built-in Drizzle Support:** Use raw SQL for maximum control, or the built-in `withDrizzle()` helper for type-safe queries. No forced dependencies.
 -   🔄 **Intelligent Sync & Conflict Resolution:** For edge use cases, you get automatic Last-Write-Wins conflict resolution and real-time bidirectional sync.
--   ⚙️ **Zero-Config Schema Management:** Define your schema once with Drizzle, and Ominipg handles the setup everywhere.
+-   ⚙️ **Zero-Config Schema Management:** Define your schema once, and Ominipg handles the setup everywhere.
 
 
 ## 🚀 Quick Start
 
-Define your schema using Drizzle ORM, then pass it to `Ominipg.connect()` with the URL for your chosen architecture.
+Ominipg is ORM-agnostic! You can use it with raw SQL or optionally with any ORM like Drizzle.
 
-**`schema.ts`**
+### Raw SQL Usage (No Dependencies)
+
+**`main.ts`**
+```typescript
+import { Ominipg } from 'jsr:@oxian/ominipg';
+
+const db = await Ominipg.connect({
+  url: 'postgres://localhost:5432/mydb',
+  schemaSQL: [
+    `CREATE TABLE IF NOT EXISTS todos (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      completed BOOLEAN DEFAULT false,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`
+  ]
+});
+
+// Execute raw SQL queries
+const todos = await db.query('SELECT * FROM todos WHERE completed = $1', [false]);
+console.log(todos.rows);
+
+// Insert data
+await db.query('INSERT INTO todos (title) VALUES ($1)', ['Learn Ominipg']);
+
+// Sync with remote (if configured)
+await db.sync();
+```
+
+### Optional Drizzle Integration
+
+If you prefer using Drizzle ORM, you can easily integrate it using the built-in `withDrizzle` helper:
+
+**🌟 Recommended: Auto-import (simplest)**
+```typescript
+import { Ominipg, withDrizzle } from 'jsr:@oxian/ominipg';
+import * as schema from './schema.ts';
+
+// Connect to Ominipg
+const ominipg = await Ominipg.connect({
+  url: 'postgres://localhost:5432/mydb',
+  schemaSQL: schema.schemaDDL,
+});
+
+// Create Drizzle adapter with automatic import
+const db = await withDrizzle(ominipg, schema);
+
+// Now use Drizzle syntax
+const allTodos = await db.select().from(schema.todos);
+console.log(allTodos);
+
+// Ominipg-specific methods are still available
+await db.sync();
+```
+
+**Alternative: Explicit import (for import control)**
+```typescript
+import { Ominipg, withDrizzle } from 'jsr:@oxian/ominipg';
+import { drizzle } from 'npm:drizzle-orm/pg-proxy';
+import * as schema from './schema.ts';
+
+const ominipg = await Ominipg.connect({
+  url: 'postgres://localhost:5432/mydb',
+  schemaSQL: schema.schemaDDL,
+});
+
+// Create Drizzle adapter with explicit drizzle import
+const db = withDrizzle(ominipg, drizzle, schema);
+
+// Use Drizzle syntax + Ominipg methods
+const allTodos = await db.select().from(schema.todos);
+await db.sync();
+```
+
+**Schema Definition Example:**
 ```typescript
 import { pgTable, serial, text, boolean, timestamp } from "drizzle-orm/pg-core";
 
-// Define your table with Drizzle
 export const todos = pgTable('todos', {
   id: serial('id').primaryKey(),
   title: text('title').notNull(),
@@ -82,7 +152,6 @@ export const todos = pgTable('todos', {
   updated_at: timestamp('updated_at').defaultNow(),
 });
 
-// Create a matching SQL statement for table creation
 export const schemaDDL = [
   `CREATE TABLE IF NOT EXISTS todos (
     id SERIAL PRIMARY KEY,
@@ -93,17 +162,57 @@ export const schemaDDL = [
 ];
 ```
 
-**`main.ts`**
+**Why use `withDrizzle`?**
+- ✅ **Zero setup** - Just pass your schema and you're ready
+- ✅ **Type-safe** - Full TypeScript support out of the box  
+- ✅ **Best of both worlds** - Drizzle syntax + Ominipg features
+- ✅ **No lock-in** - Switch between raw SQL and Drizzle anytime
+
+> **Advanced users:** If you need custom proxy behavior, you can still implement the manual Drizzle proxy pattern. See the [architecture docs](./docs/architecture-decision.md) for details.
+
+## 🤔 Which Approach Should I Use?
+
+| Feature | Raw SQL | `withDrizzle()` Helper |
+|---------|---------|----------------------|
+| **Setup complexity** | ⚡ Minimal | ⚡ Minimal |
+| **Type safety** | ❌ Manual | ✅ Automatic |
+| **Query builder** | ❌ Write SQL | ✅ Drizzle syntax |
+| **Performance** | ✅ Maximum | ✅ Excellent |
+| **Learning curve** | ✅ Just SQL | 📚 SQL + Drizzle |
+| **Bundle size** | ✅ Smallest | 📦 +Drizzle ORM |
+| **IntelliSense** | ❌ Basic | ✅ Full autocomplete |
+
+**Choose Raw SQL when:** You prefer writing SQL directly, want minimum bundle size, or have simple query needs.
+
+**Choose `withDrizzle()` when:** You want type safety, love autocompletion, or are building complex applications.
+
+## ⚡ Getting Started in 30 Seconds
+
+**Try it with raw SQL:**
+```bash
+# No installation needed with Deno!
+deno run --allow-net https://deno.land/x/ominipg/examples/quick-start.ts
+```
+
+**Try it with Drizzle:**
 ```typescript
-import { Ominipg } from 'jsr:@oxian/ominipg'; // Replace with your import path
-import * as schema from './schema.ts';
+import { Ominipg, withDrizzle } from 'jsr:@oxian/ominipg';
+import { pgTable, serial, text } from 'npm:drizzle-orm/pg-core';
 
-// See "One Library, Many Faces" above for url/syncUrl examples
-const db = await Ominipg.connect({ /* ...your options... */ });
+const users = pgTable('users', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull(),
+});
 
-// You can now use 'db' just like any other Drizzle client.
-const allTodos = await db.select().from(schema.todos);
-console.log(allTodos);
+const ominipg = await Ominipg.connect({
+  url: ':memory:', // In-memory database
+  schemaSQL: ['CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)']
+});
+
+const db = await withDrizzle(ominipg, { users });
+await db.insert(users).values({ name: 'Alice' });
+const allUsers = await db.select().from(users);
+console.log(allUsers); // [{ id: 1, name: 'Alice' }]
 ```
 
 ## ⚙️ Connection Options
@@ -112,7 +221,6 @@ console.log(allTodos);
 | ------------------- | -------------- | ------------------------------------------------------------------------------------------------------- |
 | `url`               | `string`       | Main database URL. Use `file://` for local or `postgres://` for remote. Defaults to in-memory.          |
 | `syncUrl`           | `string`       | (Optional) The remote PostgreSQL URL for enabling bidirectional sync with a local `file://` DB.         |
-| `schema`            | `object`       | The Drizzle schema object containing your table definitions.                                            |
 | `schemaSQL`         | `string[]`     | An array of SQL DDL strings for schema creation.                                                        |
 | `lwwColumn`         | `string`       | (Optional) The column for Last-Write-Wins conflict resolution. Defaults to `updated_at`.              |
 | `disableAutoPush`   | `boolean`      | (Optional) If `true`, disables automatic pushing of local changes. Use `db.sync()` to push manually. Defaults to `false`. |

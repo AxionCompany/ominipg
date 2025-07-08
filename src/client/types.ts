@@ -50,11 +50,6 @@ export interface OminipgConnectionOptions {
      * Defaults to false.
      */
     disableAutoPush?: boolean;
-
-    /**
-     * The Drizzle schema object containing your table definitions.
-     */
-    schema?: Record<string, any>;
 }
 
 export interface OminipgClientEvents {

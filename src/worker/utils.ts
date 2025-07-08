@@ -28,11 +28,11 @@ export const safeErr = (e: unknown): string =>
  * @returns 'pglite' or 'postgres'.
  */
 export function detectDatabaseType(url: string): 'pglite' | 'postgres' {
-    if (url.startsWith('file://')) {
+    if (url.startsWith('file://') || url === ':memory:' || url === '') {
         return 'pglite';
     } else if (url.startsWith('postgres://') || url.startsWith('postgresql://')) {
         return 'postgres';
     } else {
-        throw new Error(`Unsupported database URL format: ${url}. Use 'file://' for PGlite or 'postgres://' for PostgreSQL`);
+        throw new Error(`Unsupported database URL format: ${url}. Use 'file://' for PGlite, ':memory:' for in-memory, or 'postgres://' for PostgreSQL`);
     }
 } 

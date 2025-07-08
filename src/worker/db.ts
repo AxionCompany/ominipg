@@ -56,6 +56,12 @@ class PGliteAdapter implements DatabaseClient {
 }
 
 async function initializePGlite(url: string): Promise<DatabaseClient> {
+    // Handle in-memory databases
+    if (url === ':memory:' || url === '') {
+        return new PGliteAdapter(new PGlite());
+    }
+    
+    // Handle file-based databases
     const dbPath = url.replace('file://', '');
     try {
         const pglite = new PGlite(dbPath);

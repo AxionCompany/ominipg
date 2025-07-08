@@ -1,7 +1,7 @@
 {
     "name": "@oxian/ominipg",
-    "description": "Postgres for all ",
-    "version": "0.0.6",
+    "description": "Ominipg is the flexible, all-in-one toolkit for PostgreSQL in Deno.",
+    "version": "0.1.0",
     "author": "Ominipg",
     "license": "MIT",
     "exports": "./src/client/index.ts",
