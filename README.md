@@ -223,13 +223,137 @@ console.log(allUsers); // [{ id: 1, name: 'Alice' }]
 
 ## ⚙️ Connection Options
 
-| Option            | Type       | Description                                                                                                               |
-| ----------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `url`             | `string`   | Main database URL. Use `file://` for local or `postgres://` for remote. Defaults to in-memory.                            |
-| `syncUrl`         | `string`   | (Optional) The remote PostgreSQL URL for enabling bidirectional sync with a local `file://` DB.                           |
-| `schemaSQL`       | `string[]` | An array of SQL DDL strings for schema creation.                                                                          |
-| `lwwColumn`       | `string`   | (Optional) The column for Last-Write-Wins conflict resolution. Defaults to `updated_at`.                                  |
-| `disableAutoPush` | `boolean`  | (Optional) If `true`, disables automatic pushing of local changes. Use `db.sync()` to push manually. Defaults to `false`. |
+| Option              | Type       | Description                                                                                                               |
+| ------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `url`               | `string`   | Main database URL. Use `file://` for local or `postgres://` for remote. Defaults to in-memory.                            |
+| `syncUrl`           | `string`   | (Optional) The remote PostgreSQL URL for enabling bidirectional sync with a local `file://` DB.                           |
+| `schemaSQL`         | `string[]` | An array of SQL DDL strings for schema creation.                                                                          |
+| `lwwColumn`         | `string`   | (Optional) The column for Last-Write-Wins conflict resolution. Defaults to `updated_at`.                                  |
+| `disableAutoPush`   | `boolean`  | (Optional) If `true`, disables automatic pushing of local changes. Use `db.sync()` to push manually. Defaults to `false`. |
+| `pgliteExtensions`  | `string[]` | (Optional) Array of PGlite extension names to load dynamically. Only applicable when using PGlite. See extensions section below. |
+
+## 🔌 PGlite Extensions
+
+When using PGlite (local or in-memory databases), you can dynamically load extensions to add extra functionality. Extensions are automatically imported from their respective paths and activated in your database.
+
+### Available Extensions
+
+PGlite extensions that work with Ominipg:
+
+- **`uuid-ossp`** - UUID generation functions ✅
+- **`vector`** - Vector similarity search and embeddings (pgvector) ✅
+- **`ltree`** - Hierarchical tree-like data types  
+- **`pg_trgm`** - Trigram matching for fuzzy text search
+- **`fuzzystrmatch`** - Fuzzy string matching
+
+> **Note:** Extensions are automatically loaded and activated. Your application can immediately use extension functions once loaded.
+
+### Basic UUID Usage
+
+```typescript
+import { Ominipg } from "jsr:@oxian/ominipg";
+
+const db = await Ominipg.connect({
+  url: ':memory:',
+  pgliteExtensions: ['uuid_ossp'], // Load UUID extension
+  schemaSQL: [
+    `CREATE TABLE users (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      name TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`
+  ]
+});
+
+// Use UUID functions immediately
+const result = await db.query('SELECT uuid_generate_v4() as new_id');
+console.log('Generated UUID:', result.rows[0].new_id);
+
+// Insert with auto-generated UUIDs
+await db.query('INSERT INTO users (name) VALUES ($1)', ['Alice']);
+const users = await db.query('SELECT * FROM users');
+console.log('User with UUID:', users.rows[0]);
+```
+
+### Vector Search Example
+
+```typescript
+const db = await Ominipg.connect({
+  url: ':memory:',
+  pgliteExtensions: ['vector'], // Load pgvector extension
+  schemaSQL: [
+    `CREATE TABLE documents (
+      id SERIAL PRIMARY KEY,
+      content TEXT,
+      embedding VECTOR(3)
+    )`,
+    `CREATE INDEX ON documents USING ivfflat (embedding vector_cosine_ops)`
+  ]
+});
+
+// Insert with vector embeddings
+await db.query(`
+  INSERT INTO documents (content, embedding) VALUES 
+  ($1, $2::vector), ($3, $4::vector)
+`, [
+  'Hello world', '[0.1, 0.2, 0.3]',
+  'Goodbye world', '[0.4, 0.5, 0.6]'
+]);
+
+// Perform similarity search
+const similar = await db.query(`
+  SELECT content, (embedding <=> $1::vector) as distance
+  FROM documents 
+  ORDER BY embedding <=> $1::vector 
+  LIMIT 5
+`, ['[0.1, 0.2, 0.4]']);
+
+console.log('Similar documents:', similar.rows);
+```
+
+### Complete Example with Multiple Extensions
+
+```typescript
+const db = await Ominipg.connect({
+  url: 'file://./app.db',
+  pgliteExtensions: ['uuid_ossp', 'vector'], // Load both extensions
+  schemaSQL: [
+    `CREATE TABLE products (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      name TEXT NOT NULL,
+      description TEXT,
+      embedding VECTOR(128), -- For similarity search
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX ON products USING ivfflat (embedding vector_cosine_ops)`
+  ]
+});
+
+// Insert product with auto-generated UUID and embedding
+await db.query(`
+  INSERT INTO products (name, description, embedding) VALUES 
+  ($1, $2, $3::vector)
+`, [
+  'Laptop', 
+  'High-performance laptop', 
+  '[0.1, 0.2, 0.3, ...]' // 128-dimensional vector
+]);
+
+// Find similar products
+const similarProducts = await db.query(`
+  SELECT name, description, (embedding <=> $1::vector) as similarity
+  FROM products 
+  ORDER BY embedding <=> $1::vector 
+  LIMIT 5
+`, ['[0.1, 0.2, 0.3, ...]']);
+```
+
+**Try the complete working example:**
+```bash
+deno run --allow-all https://deno.land/x/ominipg/examples/pglite-extensions.ts
+```
+
+> **Note:** Extensions are only available when using PGlite (local/in-memory databases). They have no effect when connecting to a standard PostgreSQL server.
 
 ---
 

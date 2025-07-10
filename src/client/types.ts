@@ -50,6 +50,18 @@ export interface OminipgConnectionOptions {
      * Defaults to false.
      */
     disableAutoPush?: boolean;
+
+    /**
+     * Array of PGlite extension names to load dynamically.
+     * Only applicable when using PGlite (not PostgreSQL).
+     * Extensions will be imported from '@electric-sql/pglite/contrib/{extensionName}'.
+     * 
+     * @example
+     * ```typescript
+     * pgliteExtensions: ['uuid_ossp', 'vector', 'pg_trgm']
+     * ```
+     */
+    pgliteExtensions?: string[];
 }
 
 export interface OminipgClientEvents {
