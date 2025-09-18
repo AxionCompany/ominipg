@@ -1,5 +1,5 @@
 
-import pg from 'npm:pg';
+import type pg from 'npm:pg';
 import { mainDb, syncPool, meta, recentlyPushed } from '../db.ts';
 import { ensureMeta } from '../schema.ts';
 import { ident } from '../utils.ts';

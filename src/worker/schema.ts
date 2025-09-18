@@ -1,7 +1,7 @@
 
 import { mainDb, mainDbType, syncPool, meta } from './db.ts';
 import { ident } from './utils.ts';
-import pg from 'npm:pg@8.16.3';
+import type { PoolClient } from 'npm:pg@8.16.3';
 
 /**
  * Attaches the outbox trigger to a single table.
@@ -174,7 +174,7 @@ export async function ensureRemoteSchema(ddl: string[]) {
  * This is used when the puller encounters data for a table that doesn't exist yet.
  * @param tableName The name of the table to create.
  */
-export async function createTableFromRemote(client: pg.PoolClient, tableName: string) {
+export async function createTableFromRemote(client: PoolClient, tableName: string) {
     if (!syncPool) throw new Error("Cannot create table from remote: no sync pool available.");
 
     try {
@@ -261,7 +261,7 @@ export async function createTableFromRemote(client: pg.PoolClient, tableName: st
  * @param table The name of the table.
  * @param providedClient Optional client to use for the query.
  */
-export async function ensureMeta(table: string, providedClient?: pg.PoolClient) {
+export async function ensureMeta(table: string, providedClient?: PoolClient) {
     if (meta.has(table)) return;
 
     // If a client is provided, use it. Otherwise, always use the main local DB.

@@ -1,4 +1,4 @@
-import pg from 'npm:pg';
+import type pg from 'npm:pg';
 import { mainDb, syncPool } from '../db.ts';
 import { ident } from '../utils.ts';
 

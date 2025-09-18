@@ -1,7 +1,7 @@
 
 /// <reference lib="deno.unstable" />
-import pg from "npm:pg@8.16.3";
-import { PGlite } from "npm:@electric-sql/pglite@0.3.4";
+import type * as pgT from "npm:pg@8.16.3";
+import type { PGlite as PGliteType } from "npm:@electric-sql/pglite@0.3.4";
 import { detectDatabaseType } from './utils.ts';
 import type { InitMsg } from "../shared/types.ts";
 
@@ -18,7 +18,7 @@ export interface DatabaseClient {
 
 export let mainDb: DatabaseClient;
 export let mainDbType: 'pglite' | 'postgres';
-export let syncPool: pg.Pool | null = null;
+export let syncPool: pgT.Pool | null = null;
 
 /**
  * In-memory metadata cache for table schemas (PKs, columns).
@@ -36,7 +36,7 @@ export const recentlyPushed = new Map<string, Map<string, { op: string, lww: any
 /*───────────────── PGlite Adapter ──────────────────*/
 
 class PGliteAdapter implements DatabaseClient {
-    constructor(private pglite: PGlite) {}
+    constructor(private pglite: PGliteType) {}
 
     async query(sql: string, params?: unknown[]) {
         return await this.pglite.query(sql, params ?? []);
@@ -112,6 +112,7 @@ async function loadExtensions(extensionNames: string[]): Promise<Record<string, 
 }
 
 async function initializePGlite(url: string, extensionNames: string[] = []): Promise<DatabaseClient> {
+    const { PGlite } = await import("npm:@electric-sql/pglite@0.3.4");
     // Load extensions if any are specified
     const extensions = extensionNames.length > 0 ? await loadExtensions(extensionNames) : {};
     
@@ -130,6 +131,15 @@ async function initializePGlite(url: string, extensionNames: string[] = []): Pro
     
     // Handle file-based databases
     const dbPath = url.replace('file://', '');
+    // Ensure parent directory exists to prevent Emscripten FS aborts
+    try {
+        const slash = dbPath.lastIndexOf('/');
+        if (slash > 0) {
+            await Deno.mkdir(dbPath.slice(0, slash), { recursive: true });
+        }
+    } catch (_) {
+        // Ignore mkdir errors; PGlite may still handle path creation.
+    }
     try {
         const pglite = Object.keys(extensions).length > 0 
             ? new PGlite(dbPath, { extensions })
@@ -202,7 +212,7 @@ async function createExtensions(adapter: DatabaseClient, extensionNames: string[
 /*───────────────── PostgreSQL Adapter ──────────────────*/
 
 class PostgresAdapter implements DatabaseClient {
-    constructor(private pool: pg.Pool) {}
+    constructor(private pool: pgT.Pool) {}
 
     async query(sql: string, params?: unknown[]) {
         const client = await this.pool.connect();
@@ -229,6 +239,7 @@ class PostgresAdapter implements DatabaseClient {
 }
 
 async function initializePostgreSQL(url:string): Promise<DatabaseClient> {
+    const pg = await import("npm:pg@8.16.3");
     const pool = new pg.Pool({ connectionString: url, max: 5 });
     const client = await pool.connect();
     try {
@@ -254,6 +265,7 @@ export async function initConnections(cfg: InitMsg) {
         if (detectDatabaseType(cfg.syncUrl) !== 'postgres') {
             throw new Error('syncUrl must be a PostgreSQL connection string (postgres://)');
         }
+        const pg = await import("npm:pg@8.16.3");
         syncPool = new pg.Pool({ connectionString: cfg.syncUrl, max: 1 });
     }
 }

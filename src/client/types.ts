@@ -62,6 +62,12 @@ export interface OminipgConnectionOptions {
      * ```
      */
     pgliteExtensions?: string[];
+
+    /**
+     * Force use of a Web Worker even when only a Postgres URL is provided.
+     * Defaults to true. Set to false to enable direct Postgres mode (no Worker, no PGlite).
+     */
+    useWorker?: boolean;
 }
 
 export interface OminipgClientEvents {

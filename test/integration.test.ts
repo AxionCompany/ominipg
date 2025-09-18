@@ -2,10 +2,12 @@ import { Ominipg } from '../src/client/index.ts';
 import { assert, assertEquals } from "jsr:@std/assert@1.0.13";
 
 const SYNC_DB_URL = Deno.env.get('SYNC_DB_URL')!;
-const DB_URL = Deno.env.get('DB_URL') || 'file://test/test.db';
+const DB_FILE_URL = new URL(`./test.db`, import.meta.url).href; // absolute file URL
+const DB_URL = Deno.env.get('DB_URL') || DB_FILE_URL;
+const TABLE = `todos_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
 
 const schemaDDL: string[] = [
-    `CREATE TABLE IF NOT EXISTS todos (
+    `CREATE TABLE IF NOT EXISTS ${TABLE} (
         id SERIAL PRIMARY KEY,
         title TEXT NOT NULL,
         completed BOOLEAN DEFAULT false,
@@ -16,7 +18,8 @@ const schemaDDL: string[] = [
 // Ensure a clean slate before the test runs
 if (DB_URL && DB_URL.startsWith('file://')) {
     try {
-        await Deno.remove(DB_URL, { recursive: true });
+        const path = DB_URL.replace('file://', '');
+        await Deno.remove(path, { recursive: true });
     } catch (e) {
         if (!(e instanceof Deno.errors.NotFound)) throw e;
     }
@@ -28,7 +31,7 @@ Deno.test("E2E Sync Test", async (t) => {
     const cleaner = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
     try {
         // Drop the table to ensure a clean slate, it will be recreated by the sync process.
-        await cleaner.query('DROP TABLE IF EXISTS todos CASCADE');
+        await cleaner.query(`DROP TABLE IF EXISTS ${TABLE} CASCADE`);
     } finally {
         await cleaner.end();
     }
@@ -44,7 +47,7 @@ Deno.test("E2E Sync Test", async (t) => {
     let localId: number;
     await t.step("Insert local data and push", async () => {
         const result = await db.queryRaw(
-            `INSERT INTO todos (title) VALUES ($1) RETURNING id`,
+            `INSERT INTO ${TABLE} (title) VALUES ($1) RETURNING id`,
             ['My Test Todo']
         );
         localId = result.rows[0].id;
@@ -55,7 +58,7 @@ Deno.test("E2E Sync Test", async (t) => {
 
     await t.step("Verify data on remote", async () => {
         const remote = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
-        const { rows } = await remote.query('SELECT * FROM todos WHERE id = $1', [localId]);
+        const { rows } = await remote.query(`SELECT * FROM ${TABLE} WHERE id = $1`, [localId]);
         await remote.end();
 
         assertEquals(rows.length, 1);
@@ -66,7 +69,7 @@ Deno.test("E2E Sync Test", async (t) => {
     await t.step("Update data on remote and pull", async () => {
         const remote = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
         // Also update `updated_at` to ensure the LWW check passes on the puller.
-        await remote.query('UPDATE todos SET completed = true, updated_at = NOW() WHERE id = $1', [localId]);
+        await remote.query(`UPDATE ${TABLE} SET completed = true, updated_at = NOW() WHERE id = $1`, [localId]);
         await remote.end();
 
         // Wait for the puller to receive and apply the change
@@ -74,7 +77,7 @@ Deno.test("E2E Sync Test", async (t) => {
     });
 
     await t.step("Verify change on local", async () => {
-        const { rows } = await db.queryRaw('SELECT * FROM todos WHERE id = $1', [localId]);
+        const { rows } = await db.queryRaw(`SELECT * FROM ${TABLE} WHERE id = $1`, [localId]);
         assertEquals(rows.length, 1);
         assert(rows[0].completed === true, "Local record should be marked as completed");
     });
@@ -87,13 +90,13 @@ Deno.test("Initial Sync from Remote to Local", async (t) => {
     const remote = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
     let remoteId: any;
     try {
-        await remote.query('DROP TABLE IF EXISTS todos CASCADE');
+        await remote.query(`DROP TABLE IF EXISTS ${TABLE} CASCADE`);
         // Manually apply the schema DDL to the remote
         for (const stmt of schemaDDL) {
             await remote.query(stmt);
         }
         const { rows } = await remote.query(
-            "INSERT INTO todos (title, completed) VALUES ('Pre-existing Todo', false) RETURNING id"
+            `INSERT INTO ${TABLE} (title, completed) VALUES ('Pre-existing Todo', false) RETURNING id`
         );
         remoteId = rows[0].id;
     } finally {
@@ -110,7 +113,7 @@ Deno.test("Initial Sync from Remote to Local", async (t) => {
 
     // 3. Verify that the initial data from remote exists locally
     await t.step("Verify pre-existing data is synced locally", async () => {
-        const { rows } = await db.queryRaw('SELECT * FROM todos WHERE id = $1', [remoteId]);
+        const { rows } = await db.queryRaw(`SELECT * FROM ${TABLE} WHERE id = $1`, [remoteId]);
         assertEquals(rows.length, 1, "Should have synced one pre-existing record.");
         assertEquals(rows[0].title, 'Pre-existing Todo');
     });
@@ -122,7 +125,7 @@ Deno.test("Initial Sync from Local to Remote", async (t) => {
     // 1. Ensure remote is clean (no 'todos' table)
     const remoteCleaner = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
     try {
-        await remoteCleaner.query('DROP TABLE IF EXISTS todos CASCADE');
+        await remoteCleaner.query(`DROP TABLE IF EXISTS ${TABLE} CASCADE`);
     } finally {
         await remoteCleaner.end();
     }
@@ -139,7 +142,7 @@ Deno.test("Initial Sync from Local to Remote", async (t) => {
     // 3. Insert data locally
     await t.step("Insert initial local data", async () => {
         const result = await db.queryRaw(
-            "INSERT INTO todos (title, completed) VALUES ('Local-first Todo', false) RETURNING id"
+            `INSERT INTO ${TABLE} (title, completed) VALUES ('Local-first Todo', false) RETURNING id`
         );
         localId = result.rows[0].id;
         assertEquals(result.rows.length, 1);
@@ -156,7 +159,7 @@ Deno.test("Initial Sync from Local to Remote", async (t) => {
     await t.step("Verify data synced to remote", async () => {
         const remoteVerifier = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
         try {
-            const { rows } = await remoteVerifier.query('SELECT * FROM todos WHERE id = $1', [localId]);
+            const { rows } = await remoteVerifier.query(`SELECT * FROM ${TABLE} WHERE id = $1`, [localId]);
             assertEquals(rows.length, 1, "Record should exist on remote after push.");
             assertEquals(rows[0].title, 'Local-first Todo');
         } finally {

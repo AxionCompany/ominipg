@@ -2,7 +2,8 @@ import { Ominipg } from '../src/client/index.ts';
 import { assert, assertEquals } from "jsr:@std/assert@1.0.13";
 
 const SYNC_DB_URL = Deno.env.get('SYNC_DB_URL')!;
-const DB_URL = Deno.env.get('DB_URL') || 'file://test/test.db';
+const DB_FILE_URL = new URL(`./test.db`, import.meta.url).href; // absolute file URL
+const DB_URL = Deno.env.get('DB_URL') || DB_FILE_URL;
 
 const schemaDDL: string[] = [
     `CREATE TABLE IF NOT EXISTS todos (
@@ -16,7 +17,8 @@ const schemaDDL: string[] = [
 // Ensure a clean slate before the test runs
 if (DB_URL && DB_URL.startsWith('file://')) {
     try {
-        await Deno.remove(DB_URL, { recursive: true });
+        const path = DB_URL.replace('file://', '');
+        await Deno.remove(path, { recursive: true });
     } catch (e) {
         if (!(e instanceof Deno.errors.NotFound)) throw e;
     }
@@ -27,7 +29,7 @@ Deno.test("E2E Sync Test", async (t) => {
     // Clean remote state before connecting and initial sync
     const cleaner = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
     try {
-        await cleaner.query('DELETE FROM todos');
+        await cleaner.query('DROP TABLE IF EXISTS todos CASCADE');
     } finally {
         await cleaner.end();
     }
@@ -64,7 +66,7 @@ Deno.test("E2E Sync Test", async (t) => {
 
     await t.step("Update data on remote and pull", async () => {
         const remote = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
-        await remote.query('UPDATE todos SET completed = true WHERE id = $1', [localId]);
+        await remote.query('UPDATE todos SET completed = true, updated_at = NOW() WHERE id = $1', [localId]);
         await remote.end();
 
         // Wait for the puller to receive and apply the change

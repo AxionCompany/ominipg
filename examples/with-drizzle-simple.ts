@@ -39,6 +39,8 @@ export async function example() {
     // Auto-import version (async)
     const db = await withDrizzle(ominipg, drizzle, { users });
 
+    console.log(Object.keys(db));
+
     // 3. Use Drizzle syntax
     await db.insert(users).values({ name: 'Alice', age: 30 });
     await db.insert(users).values({ name: 'Bob', age: 25 });

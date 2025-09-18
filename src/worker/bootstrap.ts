@@ -1,8 +1,10 @@
 
 import type { InitMsg } from '../shared/types.ts';
-import { initConnections, closeConnections, mainDb, mainDbType, syncPool } from './db.ts';
+import { initConnections, closeConnections, syncPool } from './db.ts';
 import { bootstrapSchema } from './schema.ts';
-import { startSyncServices, stopSyncServices } from './sync/manager.ts';
+// Lazily import sync services only when sync is configured
+let startSyncServices: ((cfg: InitMsg) => Promise<void>) | undefined;
+let stopSyncServices: (() => Promise<void>) | undefined;
 
 /*───────────────── State ──────────────────*/
 
@@ -29,6 +31,11 @@ export async function boot(cfg: InitMsg) {
 
     // 3. Start synchronization services if configured
     if (syncPool) {
+        if (!startSyncServices) {
+            const mod = await import('./sync/manager.ts');
+            startSyncServices = mod.startSyncServices;
+            stopSyncServices = mod.stopSyncServices;
+        }
         await startSyncServices(cfg);
     }
 }
@@ -37,6 +44,8 @@ export async function boot(cfg: InitMsg) {
  * Gracefully shuts down all services and connections.
  */
 export async function shutdown() {
-    await stopSyncServices();
+    if (stopSyncServices) {
+        await stopSyncServices();
+    }
     await closeConnections();
 } 

@@ -9,8 +9,9 @@ you need a simple local database, a powerful offline-first solution with
 real-time sync, or just a non-blocking client for your server, Ominipg adapts to
 your needs.
 
-It runs the entire database connection in a dedicated worker, ensuring your
-application remains fast and responsive, no matter the task.
+By default, Ominipg runs the database connection in a dedicated worker, keeping
+your application responsive. For ultra low-memory scenarios, a direct Postgres
+mode (no Worker) is also available.
 
 ---
 
@@ -56,8 +57,8 @@ const db = await Ominipg.connect({
 _A modern, performant way to connect to any standard PostgreSQL database._
 
 Use Ominipg as a proxy to your primary database. All connections and queries run
-in a background worker, preventing database operations from ever blocking your
-main application thread.
+in a background worker by default, preventing database operations from ever
+blocking your main application thread.
 
 ```typescript
 const db = await Ominipg.connect({
@@ -65,6 +66,20 @@ const db = await Ominipg.connect({
   schemaSQL: ["CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)"],
 });
 // Now querying your remote DB without blocking the main thread!
+```
+
+#### Workerless Direct Mode (memory-optimized)
+
+If you don't need local PGlite or sync and want the smallest possible memory
+footprint, you can bypass the Worker and connect directly to Postgres:
+
+```typescript
+const db = await Ominipg.connect({
+  url: Deno.env.get("PRIMARY_DATABASE_URL")!,
+  useWorker: false, // direct Postgres mode (no Worker, no PGlite)
+});
+
+// Note: sync-related APIs (e.g. db.sync()) are not available in this mode.
 ```
 
 ## 💡 Core Features
@@ -231,6 +246,7 @@ console.log(allUsers); // [{ id: 1, name: 'Alice' }]
 | `lwwColumn`         | `string`   | (Optional) The column for Last-Write-Wins conflict resolution. Defaults to `updated_at`.                                  |
 | `disableAutoPush`   | `boolean`  | (Optional) If `true`, disables automatic pushing of local changes. Use `db.sync()` to push manually. Defaults to `false`. |
 | `pgliteExtensions`  | `string[]` | (Optional) Array of PGlite extension names to load dynamically. Only applicable when using PGlite. See extensions section below. |
+| `useWorker`         | `boolean`  | (Optional) If `false`, enables direct Postgres mode (no Worker, no PGlite). Defaults to `true`. |
 
 ## 🔌 PGlite Extensions
 
@@ -354,6 +370,26 @@ deno run --allow-all https://deno.land/x/ominipg/examples/pglite-extensions.ts
 ```
 
 > **Note:** Extensions are only available when using PGlite (local/in-memory databases). They have no effect when connecting to a standard PostgreSQL server.
+
+---
+
+## 🧪 Running Tests
+
+From the repository root:
+
+```bash
+deno test -A --env -r .
+```
+
+Environment variables:
+
+- `SYNC_DB_URL`: Postgres URL used for sync integration tests
+- `DB_URL_PG` (optional): Postgres URL used for direct Postgres mode test
+
+Notes:
+
+- Tests only include files under `test/**/*.ts` (configured in `deno.json`).
+- Local file-based databases use absolute `file://` URLs to avoid CWD issues.
 
 ---
 

@@ -1,4 +1,3 @@
-import "npm:pg@8.16.3";
 import { TypedEmitter } from 'npm:tiny-typed-emitter@2.1.0';
 import type { OminipgConnectionOptions, OminipgClientEvents } from './types.ts';
 import type { WorkerMsg, ResponseMsg, InitMsg, ExecMsg, SyncMsg, SyncSeqMsg, DiagnosticMsg, CloseMsg } from '../shared/types.ts';
@@ -32,7 +31,7 @@ class RequestManager {
             deferred.reject(new Error(msg.error));
         } else {
             // Exclude 'type' and 'reqId' from the resolved data
-            const { type, reqId, ...data } = msg;
+            const { type: _type, reqId: _reqId, ...data } = msg;
             deferred.resolve(data);
         }
     }
@@ -58,30 +57,53 @@ class RequestManager {
 }
 
 export class Ominipg extends TypedEmitter<OminipgClientEvents> {
-    private readonly worker: Worker;
-    private readonly requests: RequestManager;
+    private readonly mode: 'worker' | 'direct';
+    private readonly worker?: Worker;
+    private readonly requests?: RequestManager;
+    private readonly pool?: any; // pg.Pool when in direct mode
 
-    private constructor(options: OminipgConnectionOptions) {
+    private constructor(mode: 'worker' | 'direct', worker?: Worker, pool?: any) {
         super();
-        this.worker = new Worker(
-            new URL('../worker/index.ts', import.meta.url).href, 
-            { type: "module" }
-        );
-        this.requests = new RequestManager(this.worker, this);
+        this.mode = mode;
+        this.worker = worker;
+        this.requests = worker ? new RequestManager(worker, this) : undefined;
+        this.pool = pool;
     }
 
     public static async connect(options: OminipgConnectionOptions): Promise<Ominipg> {
-        const db = new Ominipg(options);
-        
+        const url = options.url || `:memory:`;
+        const useWorker = options.useWorker !== false; // default true
+        const isPg = url.startsWith('postgres://') || url.startsWith('postgresql://');
+        const syncDisabled = !options.syncUrl;
+
+        if (!useWorker && isPg && syncDisabled) {
+            const pg = await import('npm:pg@8.16.3');
+            const pool = new pg.Pool({ connectionString: url, max: 5 });
+            const client = await pool.connect();
+            try {
+                await client.query('SELECT 1');
+            } finally {
+                client.release();
+            }
+            const db = new Ominipg('direct', undefined, pool);
+            db.emit('connected');
+            return db;
+        }
+
+        const worker = new Worker(
+            new URL('../worker/index.ts', import.meta.url).href,
+            { type: "module" }
+        );
+        const db = new Ominipg('worker', worker);
+
         const initMsg = {
             type: 'init' as const,
             ...options,
-            url: options.url || `:memory:`,
+            url,
         };
-        
-        await db.requests.request<InitMsg>(initMsg, 60000); // Longer timeout for init
+
+        await db.requests!.request<InitMsg>(initMsg, 60000); // Longer timeout for init
         db.emit('connected');
-        
         return db;
     }
 
@@ -90,8 +112,17 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
      * directly or wrapped by ORMs like Drizzle.
      */
     public async query(sql: string, params?: unknown[]): Promise<{ rows: any[] }> {
+        if (this.mode === 'direct') {
+            const client = await this.pool.connect();
+            try {
+                const result = await client.query(sql, params ?? []);
+                return { rows: result.rows };
+            } finally {
+                client.release();
+            }
+        }
         const message: Omit<ExecMsg, "reqId"> = { type: 'exec', sql, params };
-        return await this.requests.request<{ rows: any[] }>(message);
+        return await this.requests!.request<{ rows: any[] }>(message);
     }
 
     /**
@@ -105,9 +136,12 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
      * Pushes local changes to the remote database.
      */
     public async sync(): Promise<{ pushed: number }> {
+        if (this.mode === 'direct') {
+            throw new Error('Sync is disabled in direct Postgres mode');
+        }
         this.emit('sync:start');
         const message: Omit<SyncMsg, "reqId"> = { type: 'sync' };
-        const result = await this.requests.request<{ pushed: number }>(message, 120000); // Long timeout for sync
+        const result = await this.requests!.request<{ pushed: number }>(message, 120000);
         this.emit('sync:end', result);
         return result;
     }
@@ -116,16 +150,25 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
      * Synchronizes sequence values from the remote database.
      */
     public async syncSequences(): Promise<{ synced: number }> {
+        if (this.mode === 'direct') {
+            throw new Error('Sync sequences is disabled in direct Postgres mode');
+        }
         const message: Omit<SyncSeqMsg, "reqId"> = { type: 'sync-sequences' };
-        return await this.requests.request<{ synced: number }>(message, 120000);
+        return await this.requests!.request<{ synced: number }>(message, 120000);
     }
 
     /**
      * Retrieves diagnostic information about the worker's state.
      */
     public async getDiagnosticInfo(): Promise<any> {
+        if (this.mode === 'direct') {
+            return {
+                mainDatabase: { type: 'postgres' },
+                syncDatabase: { hasSyncPool: false },
+            };
+        }
         const message: Omit<DiagnosticMsg, "reqId"> = { type: 'diagnostic' };
-        const { info } = await this.requests.request<{ info: any }>(message);
+        const { info } = await this.requests!.request<{ info: any }>(message);
         return info;
     }
 
@@ -133,9 +176,14 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
      * Closes the database connection and terminates the worker.
      */
     public async close(): Promise<void> {
+        if (this.mode === 'direct') {
+            await this.pool?.end();
+            this.emit('close');
+            return;
+        }
         const message: Omit<CloseMsg, "reqId"> = { type: 'close' };
-        this.requests.post(message);
-        this.worker.terminate();
+        this.requests!.post(message);
+        this.worker!.terminate();
         this.emit('close');
     }
 }
