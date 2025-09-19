@@ -12,6 +12,7 @@ const post = (msg: ResponseMsg) => {
 
 // Main worker message listener
 self.addEventListener("message", async (e: MessageEvent<WorkerMsg>) => {
+    console.log('Worker message received', e.data);
     try {
         const m = e.data;
         switch (m.type) {

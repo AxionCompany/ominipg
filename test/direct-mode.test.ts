@@ -3,7 +3,7 @@ import { assertEquals, assertRejects } from "jsr:@std/assert@1.0.13";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const PG_URL = Deno.env.get('DB_URL_PG'); // postgres:// URL
-
+console.log('PG_URL', PG_URL);
 if (!PG_URL) {
     Deno.test({
         name: "Direct Postgres mode: skipped (missing DB_URL_PG)",
@@ -12,7 +12,7 @@ if (!PG_URL) {
     });
 } else {
     Deno.test("Direct Postgres mode: basic query and disabled sync", async () => {
-        const db = await Ominipg.connect({ url: PG_URL, useWorker: false });
+        const db = await Ominipg.connect({ url: PG_URL });
 
         console.log('Waiting for 100 seconds');
         await sleep(10000);

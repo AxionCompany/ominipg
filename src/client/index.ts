@@ -72,11 +72,12 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
     public static async connect(options: OminipgConnectionOptions): Promise<Ominipg> {
         const url = options.url || `:memory:`;
-        const useWorker = options.useWorker !== false; // default true
         const isPg = url.startsWith('postgres://') || url.startsWith('postgresql://');
         const syncDisabled = !options.syncUrl;
+        const useWorker = options.useWorker ?? !(isPg && syncDisabled);
 
         if (!useWorker && isPg && syncDisabled) {
+            console.log('Using direct Postgres mode');
             const pg = await import('npm:pg@8.16.3');
             const pool = new pg.Pool({ connectionString: url, max: 5 });
             const client = await pool.connect();
@@ -85,13 +86,14 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
             } finally {
                 client.release();
             }
+            console.log('Direct Postgres mode connected');
             const db = new Ominipg('direct', undefined, pool);
             db.emit('connected');
             return db;
         }
 
         const worker = new Worker(
-            new URL('../worker/index.ts', import.meta.url).href,
+            new URL(`${(()=>'../worker/index.ts')()}`, import.meta.url).href,
             { type: "module" }
         );
         const db = new Ominipg('worker', worker);
@@ -311,7 +313,7 @@ function createDrizzleAdapter(
         
         // Raw query access
         queryRaw: ominipgInstance.query.bind(ominipgInstance),
-        query: ominipgInstance.query.bind(ominipgInstance),
+        // query: ominipgInstance.query.bind(ominipgInstance),
         
         // Access to the underlying Ominipg instance
         _ominipg: ominipgInstance,
