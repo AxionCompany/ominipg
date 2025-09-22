@@ -1,14 +1,12 @@
 
 /// <reference lib="deno.unstable" />
-import type * as pgT from "npm:pg@8.16.3";
-import type { PGlite as PGliteType } from "npm:@electric-sql/pglite@0.3.4";
-import { detectDatabaseType } from './utils.ts';
+import { detectDatabaseType, getRssMb } from './utils.ts';
 import type { InitMsg } from "../shared/types.ts";
 
 /*───────────────── Types ──────────────────*/
 
 export interface DatabaseClient {
-    query(sql: string, params?: unknown[]): Promise<{ rows: any[] }>;
+    query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
     exec(sql: string): Promise<void>;
     listen?(channel: string, callback: () => void): Promise<void>;
     close(): Promise<void>;
@@ -18,7 +16,19 @@ export interface DatabaseClient {
 
 export let mainDb: DatabaseClient;
 export let mainDbType: 'pglite' | 'postgres';
-export let syncPool: pgT.Pool | null = null;
+
+// Minimal pg types to avoid importing npm modules at top-level
+export interface PgPoolClient {
+    query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
+    release(): void;
+}
+export interface PgPool {
+    connect(): Promise<PgPoolClient>;
+    end(): Promise<void>;
+    options?: { connectionString?: string };
+}
+
+export let syncPool: PgPool | null = null;
 
 /**
  * In-memory metadata cache for table schemas (PKs, columns).
@@ -35,8 +45,16 @@ export const recentlyPushed = new Map<string, Map<string, { op: string, lww: any
 
 /*───────────────── PGlite Adapter ──────────────────*/
 
+// Minimal PGlite interface
+interface PGliteLike {
+    query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
+    exec(sql: string): Promise<void>;
+    listen(channel: string, callback: () => void): Promise<void>;
+    close(): Promise<void>;
+}
+
 class PGliteAdapter implements DatabaseClient {
-    constructor(private pglite: PGliteType) {}
+    constructor(private pglite: PGliteLike) { }
 
     async query(sql: string, params?: unknown[]) {
         return await this.pglite.query(sql, params ?? []);
@@ -58,19 +76,19 @@ class PGliteAdapter implements DatabaseClient {
 /**
  * Dynamically imports PGlite extensions based on their names
  */
-async function loadExtensions(extensionNames: string[]): Promise<Record<string, any>> {
+async function loadExtensions(extensionNames: string[], logMetrics?: boolean): Promise<Record<string, any>> {
     const extensions: Record<string, any> = {};
-    
+
     // Map of extension names to their import paths
     const extensionPaths: Record<string, string> = {
         // Main package extensions
         'vector': 'vector',
         'live': 'live',
-        
+
         // Contrib extensions
         'uuid_ossp': 'contrib/uuid_ossp',
         'amcheck': 'contrib/amcheck',
-        'auto_explain': 'contrib/auto_explain', 
+        'auto_explain': 'contrib/auto_explain',
         'bloom': 'contrib/bloom',
         'btree_gin': 'contrib/btree_gin',
         'btree_gist': 'contrib/btree_gist',
@@ -89,7 +107,7 @@ async function loadExtensions(extensionNames: string[]): Promise<Record<string, 
         'tsm_system_rows': 'contrib/tsm_system_rows',
         'tsm_system_time': 'contrib/tsm_system_time'
     };
-    
+
     for (const extensionName of extensionNames) {
         try {
             const importPath = extensionPaths[extensionName];
@@ -97,72 +115,85 @@ async function loadExtensions(extensionNames: string[]): Promise<Record<string, 
                 console.warn(`⚠ Unknown PGlite extension: ${extensionName}`);
                 continue;
             }
-            
+
+            const before = getRssMb();
             const extensionModule = await import(`npm:@electric-sql/pglite@0.3.4/${importPath}`);
             // The extension is typically exported with the same name as the module
             extensions[extensionName] = extensionModule[extensionName] || extensionModule.default || extensionModule;
-            console.log(`✓ Loaded PGlite extension: ${extensionName}`);
+            if (logMetrics) {
+                const after = getRssMb();
+                if (after != null && before != null) {
+                    console.log(`PGlite module loaded: ${extensionName} (+${after - before} MB, rss=${after} MB)`);
+                }
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             console.warn(`⚠ Failed to load PGlite extension "${extensionName}": ${message}`);
         }
     }
-    
+
     return extensions;
 }
 
-async function initializePGlite(url: string, extensionNames: string[] = []): Promise<DatabaseClient> {
+async function initializePGlite(url: string, extensionNames: string[] = [], logMetrics?: boolean): Promise<DatabaseClient> {
     const { PGlite } = await import("npm:@electric-sql/pglite@0.3.4");
-    // Load extensions if any are specified
-    const extensions = extensionNames.length > 0 ? await loadExtensions(extensionNames) : {};
-    
-    // Handle in-memory databases
+    const extensions = extensionNames.length > 0 ? await loadExtensions(extensionNames, logMetrics) : {};
+
     if (url === ':memory:' || url === '') {
+        const before = getRssMb();
         const config = Object.keys(extensions).length > 0 ? { extensions } : undefined;
-        const adapter = new PGliteAdapter(new PGlite(config));
-        
-        // Create extensions if any were loaded
+        const adapter = new PGliteAdapter(new PGlite(config) as unknown as PGliteLike);
         if (extensionNames.length > 0) {
             await createExtensions(adapter, extensionNames);
+            if (logMetrics) {
+                const after = getRssMb();
+                if (after != null && before != null) {
+                    console.log(`PGlite initialized in-memory (+${after - before} MB, rss=${after} MB)`);
+                }
+            }
         }
-        
         return adapter;
     }
-    
-    // Handle file-based databases
+
     const dbPath = url.replace('file://', '');
-    // Ensure parent directory exists to prevent Emscripten FS aborts
+    const before = getRssMb();
     try {
         const slash = dbPath.lastIndexOf('/');
         if (slash > 0) {
             await Deno.mkdir(dbPath.slice(0, slash), { recursive: true });
         }
     } catch (_) {
-        // Ignore mkdir errors; PGlite may still handle path creation.
+        // Ignore mkdir errors
     }
     try {
-        const pglite = Object.keys(extensions).length > 0 
+        const pglite = Object.keys(extensions).length > 0
             ? new PGlite(dbPath, { extensions })
             : new PGlite(dbPath);
-        const adapter = new PGliteAdapter(pglite);
-        
-        // Create extensions if any were loaded
+        const adapter = new PGliteAdapter(pglite as unknown as PGliteLike);
         if (extensionNames.length > 0) {
             await createExtensions(adapter, extensionNames);
+            if (logMetrics) {
+                const after = getRssMb();
+                if (after != null && before != null) {
+                    console.log(`PGlite initialized file-db (+${after - before} MB, rss=${after} MB)`);
+                }
+            }
         }
-        
         return adapter;
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(`File-based PGlite failed (${message}), falling back to in-memory.`);
         const config = Object.keys(extensions).length > 0 ? { extensions } : undefined;
-        const adapter = new PGliteAdapter(new PGlite(config));
-        
-        // Create extensions if any were loaded
+        const adapter = new PGliteAdapter(new PGlite(config) as unknown as PGliteLike);
         if (extensionNames.length > 0) {
             await createExtensions(adapter, extensionNames);
+            if (logMetrics) {
+                const after = getRssMb();
+                if (after != null && before != null) {
+                    console.log(`PGlite initialized (fallback, in-memory) (+${after - before} MB, rss=${after} MB)`);
+                }
+            }
         }
-        
         return adapter;
     }
 }
@@ -196,12 +227,11 @@ async function createExtensions(adapter: DatabaseClient, extensionNames: string[
         'tsm_system_rows': 'tsm_system_rows',
         'tsm_system_time': 'tsm_system_time'
     };
-    
+
     for (const extensionName of extensionNames) {
         try {
             const sqlName = extensionSqlNames[extensionName] || extensionName;
             await adapter.exec(`CREATE EXTENSION IF NOT EXISTS "${sqlName}"`);
-            console.log(`✓ Created PGlite extension: ${extensionName}`);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             console.warn(`⚠ Failed to create PGlite extension "${extensionName}": ${message}`);
@@ -212,7 +242,7 @@ async function createExtensions(adapter: DatabaseClient, extensionNames: string[
 /*───────────────── PostgreSQL Adapter ──────────────────*/
 
 class PostgresAdapter implements DatabaseClient {
-    constructor(private pool: pgT.Pool) {}
+    constructor(private pool: PgPool) { }
 
     async query(sql: string, params?: unknown[]) {
         const client = await this.pool.connect();
@@ -238,7 +268,7 @@ class PostgresAdapter implements DatabaseClient {
     }
 }
 
-async function initializePostgreSQL(url:string): Promise<DatabaseClient> {
+async function initializePostgreSQL(url: string): Promise<DatabaseClient> {
     const pg = await import("npm:pg@8.16.3");
     const pool = new pg.Pool({ connectionString: url, max: 5 });
     const client = await pool.connect();
@@ -258,8 +288,8 @@ async function initializePostgreSQL(url:string): Promise<DatabaseClient> {
 export async function initConnections(cfg: InitMsg) {
     mainDbType = detectDatabaseType(cfg.url);
     mainDb = mainDbType === 'pglite'
-        ? await initializePGlite(cfg.url, cfg.pgliteExtensions)
-        : await initializePostgreSQL(cfg.url);
+         ? await initializePGlite(cfg.url, cfg.pgliteExtensions ?? [], cfg.logMetrics)
+         : await initializePostgreSQL(cfg.url);
 
     if (cfg.syncUrl) {
         if (detectDatabaseType(cfg.syncUrl) !== 'postgres') {

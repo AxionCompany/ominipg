@@ -1,7 +1,7 @@
 
 import { mainDb, mainDbType, syncPool, meta } from './db.ts';
 import { ident } from './utils.ts';
-import type { PoolClient } from 'npm:pg@8.16.3';
+import type { PgPoolClient } from './db.ts';
 
 /**
  * Attaches the outbox trigger to a single table.
@@ -36,7 +36,7 @@ async function ensureAllTriggersExist() {
         AND tablename NOT LIKE '_outbox%'
     `);
 
-    for (const row of tablesResult.rows) {
+    for (const row of tablesResult.rows as Array<{ tablename: string }>) {
         await ensureTrigger(row.tablename);
     }
 }
@@ -174,7 +174,7 @@ export async function ensureRemoteSchema(ddl: string[]) {
  * This is used when the puller encounters data for a table that doesn't exist yet.
  * @param tableName The name of the table to create.
  */
-export async function createTableFromRemote(client: PoolClient, tableName: string) {
+export async function createTableFromRemote(client: PgPoolClient, tableName: string) {
     if (!syncPool) throw new Error("Cannot create table from remote: no sync pool available.");
 
     try {
@@ -186,8 +186,8 @@ export async function createTableFromRemote(client: PoolClient, tableName: strin
             WHERE c.table_name = $1 AND c.table_schema = 'public'
         `, [tableName]);
 
-        for (const seqRow of sequencesResult.rows) {
-            await mainDb.exec(`CREATE SEQUENCE IF NOT EXISTS ${ident(seqRow.sequencename)}`);
+    for (const seqRow of sequencesResult.rows as Array<{ sequencename: string }>) {
+        await mainDb.exec(`CREATE SEQUENCE IF NOT EXISTS ${ident(seqRow.sequencename)}`);
         }
         // --- End of fix ---
 
@@ -219,10 +219,10 @@ export async function createTableFromRemote(client: PoolClient, tableName: strin
               AND n.nspname = 'public'
               AND i.indisprimary = true
         `, [tableName]);
-        const primaryKeys = pkResult.rows.map((r: any) => ident(r.column_name));
+        const primaryKeys = (pkResult.rows as Array<{ column_name: string }>).map((r) => ident(r.column_name));
 
         // Build CREATE TABLE statement
-        const columns = schemaResult.rows.map((col: any) => {
+        const columns = (schemaResult.rows as Array<{ column_name: string; data_type: string; not_null: boolean; default_value: string | null }>).map((col) => {
             let def = `${ident(col.column_name)} ${col.data_type}`;
             if (col.not_null) def += ' NOT NULL';
             if (col.default_value) def += ` DEFAULT ${col.default_value}`;
@@ -261,7 +261,7 @@ export async function createTableFromRemote(client: PoolClient, tableName: strin
  * @param table The name of the table.
  * @param providedClient Optional client to use for the query.
  */
-export async function ensureMeta(table: string, providedClient?: PoolClient) {
+export async function ensureMeta(table: string, providedClient?: PgPoolClient) {
     if (meta.has(table)) return;
 
     // If a client is provided, use it. Otherwise, always use the main local DB.
@@ -279,7 +279,7 @@ export async function ensureMeta(table: string, providedClient?: PoolClient) {
               AND a.attnum > 0 AND NOT a.attisdropped
         `;
         
-        const result = await (client as any).query(query, [table]);
+        const result = await (client as unknown as { query: (q: string, p: unknown[]) => Promise<{ rows: Array<{ attname: string; indisprimary: boolean }> }> }).query(query, [table]);
 
         if (result.rows.length === 0) {
             // Fallback for new tables not yet in remote, or for non-syncing DB
@@ -287,8 +287,8 @@ export async function ensureMeta(table: string, providedClient?: PoolClient) {
             return;
         }
 
-        const pk = result.rows.filter((r: any) => r.indisprimary).map((r: any) => r.attname);
-        const non = result.rows.filter((r: any) => !r.indisprimary).map((r: any) => r.attname);
+        const pk = result.rows.filter((r) => r.indisprimary).map((r) => r.attname);
+        const non = result.rows.filter((r) => !r.indisprimary).map((r) => r.attname);
 
         const finalPk = pk.length > 0 ? pk : ['id'];
         meta.set(table, { pk: finalPk, non });

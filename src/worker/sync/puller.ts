@@ -143,7 +143,7 @@ export async function startPuller(cfg: InitMsg) {
                 SELECT slot_name FROM pg_replication_slots 
                 WHERE plugin = 'pgoutput' AND active = 'false' AND slot_name LIKE 'edge_%'
             `);
-            for (const oldSlot of oldSlotsResult.rows) {
+            for (const oldSlot of oldSlotsResult.rows as Array<{ slot_name: string }>) {
                 try {
                     await client.query(`SELECT pg_drop_replication_slot($1)`, [oldSlot.slot_name]);
                 } catch (e) {
@@ -165,7 +165,8 @@ export async function startPuller(cfg: InitMsg) {
         client.release();
     }
 
-    repl = new LogicalReplicationService({ connectionString: syncPool.options.connectionString });
+    const connectionString = cfg.syncUrl || syncPool?.options?.connectionString || '';
+    repl = new LogicalReplicationService({ connectionString });
 
     // --- FIX: Run subscription as a background process ---
     

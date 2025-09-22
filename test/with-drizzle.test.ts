@@ -23,12 +23,15 @@ Deno.test("withDrizzle - explicit drizzle factory", async () => {
     const ominipg = await Ominipg.connect({
         url: ':memory:',
         schemaSQL: schemaDDL,
+        pgliteExtensions: ['uuid_ossp', 'vector', 'pg_trgm'],
+        logMetrics: true,
     });
 
     // 2. Create Drizzle adapter using explicit factory
     const db = withDrizzle(ominipg, drizzle, { users });
     
     // 3. Test that the adapter has both Drizzle and Ominipg methods
+    assertExists(db.query, "Should have Drizzle query method");
     assertExists(db.select, "Should have Drizzle select method");
     assertExists(db.insert, "Should have Drizzle insert method");
     assertExists(db.sync, "Should have Ominipg sync method");

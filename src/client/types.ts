@@ -68,6 +68,13 @@ export interface OminipgConnectionOptions {
      * Defaults to true. Set to false to enable direct Postgres mode (no Worker, no PGlite).
      */
     useWorker?: boolean;
+
+    /**
+     * If true, the worker will log lightweight runtime metrics during initialization
+     * (e.g., RSS memory in MB on Linux) to help diagnose startup memory usage.
+     * This is a no-op on platforms without /proc.
+     */
+    logMetrics?: boolean;
 }
 
 export interface OminipgClientEvents {

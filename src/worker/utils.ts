@@ -23,6 +23,31 @@ export const safeErr = (e: unknown): string =>
         : String(e);
 
 /**
+ * Returns the current process RSS in MB (Linux only). If not available, returns null.
+ */
+export function getRssMb(): number | null {
+    try {
+        if (Deno.build.os === 'linux') {
+            const statm = Deno.readTextFileSync("/proc/self/statm").split(" ");
+            const pages = Number(statm[1]);
+            const bytes = pages * 4096; // Linux page size
+            return Math.round(bytes / 1024 / 1024);
+        }
+        if (Deno.build.os === 'darwin') {
+            const cmd = new Deno.Command('ps', { args: ['-o', 'rss=', '-p', String(Deno.pid)] });
+            const out = cmd.outputSync();
+            const text = new TextDecoder().decode(out.stdout).trim();
+            const kb = parseInt(text || '0', 10);
+            if (!Number.isFinite(kb) || kb <= 0) return null;
+            return Math.round(kb / 1024);
+        }
+        return null;
+    } catch (_e) {
+        return null;
+    }
+}
+
+/**
  * Detects the database type from a connection URL.
  * @param url The connection URL.
  * @returns 'pglite' or 'postgres'.

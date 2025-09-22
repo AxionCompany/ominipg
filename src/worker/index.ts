@@ -1,7 +1,7 @@
 /// <reference lib="deno.worker" />
 
 import type { WorkerMsg, ResponseMsg } from '../shared/types.ts';
-import { safeErr } from './utils.ts';
+import { safeErr, getRssMb } from './utils.ts';
 import { boot, shutdown } from './bootstrap.ts';
 import { exec } from './db.ts';
 
@@ -17,8 +17,12 @@ self.addEventListener("message", async (e: MessageEvent<WorkerMsg>) => {
         const m = e.data;
         switch (m.type) {
             case "init": {
-
+                const before = getRssMb();
                 await boot(m);
+                const after = getRssMb();
+                if (m.logMetrics && before != null && after != null) {
+                    console.log(`Worker boot complete (+${after - before} MB, rss=${after} MB)`);
+                }
                 post({ type: "init-ok", reqId: m.reqId });
                 break;
             }

@@ -23,6 +23,7 @@ export interface InitMsg {
     initialSyncFrom?: string;
     disableAutoPush?: boolean;
     pgliteExtensions?: string[];
+    logMetrics?: boolean;
 }
 
 export type ExecMsg = { 

@@ -1,4 +1,4 @@
-import type pg from 'npm:pg';
+import type { PgPoolClient } from '../db.ts';
 import { mainDb, syncPool } from '../db.ts';
 import { ident } from '../utils.ts';
 
@@ -7,7 +7,7 @@ import { ident } from '../utils.ts';
  * @param remoteClient A client connected to the remote database.
  * @param tableName The name of the table.
  */
-export async function synchronizeTableSequences(remoteClient: pg.PoolClient, tableName: string) {
+export async function synchronizeTableSequences(remoteClient: PgPoolClient, tableName: string) {
     const sequencesResult = await remoteClient.query(`
         SELECT s.sequencename, c.column_name
         FROM pg_sequences s
@@ -15,13 +15,13 @@ export async function synchronizeTableSequences(remoteClient: pg.PoolClient, tab
         WHERE c.table_name = $1 AND c.table_schema = 'public'
     `, [tableName]);
 
-    for (const seqRow of sequencesResult.rows) {
+    for (const seqRow of sequencesResult.rows as Array<{ sequencename: string; column_name: string }>) {
         const { sequencename, column_name } = seqRow;
         
         const maxResult = await mainDb.query(`
             SELECT COALESCE(MAX(${ident(column_name)}), 0) as max_val FROM ${ident(tableName)}
         `);
-        const maxVal = parseInt(maxResult.rows[0]?.max_val || '0');
+        const maxVal = parseInt((maxResult.rows[0] as { max_val?: string } | undefined)?.max_val || '0');
         
         if (maxVal > 0) {
             await mainDb.query(`SELECT setval($1, $2)`, [sequencename, maxVal + 1]);
@@ -42,7 +42,7 @@ export async function synchronizeSequences(): Promise<number> {
             WHERE schemaname = 'public' AND tablename NOT LIKE '_%'
         `);
 
-        for (const tableRow of tablesResult.rows) {
+        for (const tableRow of tablesResult.rows as Array<{ tablename: string }>) {
             await synchronizeTableSequences(client, tableRow.tablename);
         }
     

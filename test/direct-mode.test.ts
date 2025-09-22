@@ -12,7 +12,7 @@ if (!PG_URL) {
     });
 } else {
     Deno.test("Direct Postgres mode: basic query and disabled sync", async () => {
-        const db = await Ominipg.connect({ url: PG_URL });
+        const db = await Ominipg.connect({ url: PG_URL , logMetrics: true });
 
         console.log('Waiting for 100 seconds');
         await sleep(10000);

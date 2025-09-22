@@ -10,7 +10,7 @@ export async function getDiagnosticInfo(): Promise<any> {
     try {
         const countResult = await mainDb.query('SELECT COUNT(*) as count FROM _outbox');
         outboxInfo = {
-            totalCount: parseInt(countResult.rows[0]?.count || '0'),
+            totalCount: parseInt(((countResult.rows[0] as { count?: string } | undefined)?.count) || '0'),
         };
     } catch (e) {
         outboxInfo = { error: 'Outbox table not available.' };
@@ -38,7 +38,7 @@ export async function getDiagnosticInfo(): Promise<any> {
         },
         syncState: syncInfo,
         outbox: outboxInfo,
-        trackedTables: tablesResult.rows.map(r => r.tablename),
+        trackedTables: (tablesResult.rows as Array<{ tablename: string }>).map((r) => r.tablename),
         echoPrevention: {
             trackedTables: Array.from(recentlyPushed.keys()),
             entries: Object.fromEntries(

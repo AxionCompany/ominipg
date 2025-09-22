@@ -1,5 +1,5 @@
 
-import type pg from 'npm:pg';
+import type { PgPoolClient } from '../db.ts';
 import { mainDb, syncPool, meta, recentlyPushed } from '../db.ts';
 import { ensureMeta } from '../schema.ts';
 import { ident } from '../utils.ts';
@@ -9,7 +9,7 @@ import { LWW_COL, EDGE_ID } from '../bootstrap.ts';
 // We assume it does until we get a permission error.
 let replicationOriginSupported = true;
 
-async function remoteUpsert(client: pg.PoolClient, table: string, row: Record<string, unknown>) {
+async function remoteUpsert(client: PgPoolClient, table: string, row: Record<string, unknown>) {
     const m = meta.get(table)!;
     const pkList = m.pk.map(ident).join(",");
     const updSet = m.non.map(c => `${ident(c)} = excluded.${ident(c)}`).join(", ");
@@ -29,7 +29,7 @@ export async function pushBatch(): Promise<number> {
     const client = await syncPool.connect();
     try {
         const syncResult = await mainDb.query('SELECT last_push FROM _sync_state WHERE id = 1');
-        const lastPush = syncResult.rows[0]?.last_push || 0;
+        const lastPush = (syncResult.rows[0] as { last_push?: number } | undefined)?.last_push || 0;
 
         const outboxResult = await mainDb.query(`
             SELECT * FROM _outbox WHERE id > $1 ORDER BY id
@@ -55,36 +55,36 @@ export async function pushBatch(): Promise<number> {
 
         await client.query('BEGIN');
         try {
-            for (const row of outboxResult.rows) {
+            for (const row of outboxResult.rows as Array<{ id: number; table_name: string; op: 'I'|'U'|'D'; pk: Record<string, unknown>; row_json: Record<string, unknown> | null }>) {
                 await ensureMeta(row.table_name);
                 const m = meta.get(row.table_name)!;
 
                 // Track this change to prevent processing it as an echo later
-                const pkValues = m.pk.map(col => String(row.pk[col] || '')).join('|');
+                const pkValues = m.pk.map(col => String((row.pk as Record<string, unknown>)[col] || '')).join('|');
                 if (!recentlyPushed.has(row.table_name)) {
                     recentlyPushed.set(row.table_name, new Map());
                 }
-                const lwwValue = row.row_json ? row.row_json[LWW_COL] : null;
+                const lwwValue = row.row_json ? (row.row_json as Record<string, unknown>)[LWW_COL] : null;
                 recentlyPushed.get(row.table_name)!.set(pkValues, { op: row.op, lww: lwwValue });
                 
                 if (row.op === 'D') {
                     const whereConds = m.pk.map((p, i) => `${ident(p)} = $${i + 1}`).join(" AND ");
-                    const values = m.pk.map(p => row.pk[p]);
+                    const values = m.pk.map(p => (row.pk as Record<string, unknown>)[p]);
                     await client.query(`DELETE FROM ${ident(row.table_name)} WHERE ${whereConds}`, values);
                 } else {
-                    await remoteUpsert(client, row.table_name, row.row_json);
+                    await remoteUpsert(client, row.table_name, row.row_json as Record<string, unknown>);
                 }
             }
             
             await client.query('COMMIT');
             
-            const lastRowId = outboxResult.rows[outboxResult.rows.length - 1].id;
+            const lastRowId = (outboxResult.rows as Array<{ id: number }>)[outboxResult.rows.length - 1].id;
             await mainDb.query('UPDATE _sync_state SET last_push = $1 WHERE id = 1', [lastRowId]);
             await mainDb.query('DELETE FROM _outbox WHERE id <= $1', [lastRowId]);
 
             // Expire pushed keys after a timeout to prevent memory leaks if an echo is never received.
             setTimeout(() => {
-                const now = Date.now();
+                const _now = Date.now();
                 for (const [_tableName, pushedMap] of recentlyPushed.entries()) {
                     for (const pk of pushedMap.keys()) {
                          // This is a simplified example; a real implementation would store timestamps
@@ -105,7 +105,7 @@ export async function pushBatch(): Promise<number> {
         if (replicationOriginSupported) {
             try {
                 await client.query('SELECT pg_replication_origin_session_reset()');
-            } catch (e) {
+            } catch (_e) {
                 // This is expected on some managed DBs, so we don't need to log.
             }
         }

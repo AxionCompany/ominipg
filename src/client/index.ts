@@ -2,6 +2,29 @@ import { TypedEmitter } from 'npm:tiny-typed-emitter@2.1.0';
 import type { OminipgConnectionOptions, OminipgClientEvents } from './types.ts';
 import type { WorkerMsg, ResponseMsg, InitMsg, ExecMsg, SyncMsg, SyncSeqMsg, DiagnosticMsg, CloseMsg } from '../shared/types.ts';
 
+// Lightweight, best-effort RSS reader for metrics logging
+function getRssMb(): number | null {
+    try {
+        if (Deno.build.os === 'linux') {
+            const statm = Deno.readTextFileSync('/proc/self/statm').split(' ');
+            const pages = Number(statm[1]);
+            const bytes = pages * 4096;
+            return Math.round(bytes / 1024 / 1024);
+        }
+        if (Deno.build.os === 'darwin') {
+            const cmd = new Deno.Command('ps', { args: ['-o', 'rss=', '-p', String(Deno.pid)] });
+            const out = cmd.outputSync();
+            const text = new TextDecoder().decode(out.stdout).trim();
+            const kb = parseInt(text || '0', 10);
+            if (!Number.isFinite(kb) || kb <= 0) return null;
+            return Math.round(kb / 1024);
+        }
+        return null;
+    } catch (_e) {
+        return null;
+    }
+}
+
 class RequestManager {
     private _id = 0;
     private readonly pending = new Map<number, { resolve: (value: any) => void, reject: (reason?: any) => void, timeoutId: number }>();
@@ -75,8 +98,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         const isPg = url.startsWith('postgres://') || url.startsWith('postgresql://');
         const syncDisabled = !options.syncUrl;
         const useWorker = options.useWorker ?? !(isPg && syncDisabled);
+        const metricsEnabled = !!options.logMetrics;
 
         if (!useWorker && isPg && syncDisabled) {
+            const before = metricsEnabled ? getRssMb() : null;
             console.log('Using direct Postgres mode');
             const pg = await import('npm:pg@8.16.3');
             const pool = new pg.Pool({ connectionString: url, max: 5 });
@@ -87,15 +112,28 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
                 client.release();
             }
             console.log('Direct Postgres mode connected');
+            if (metricsEnabled) {
+                const after = getRssMb();
+                if (after != null && before != null) {
+                    console.log(`Direct Postgres initialized (+${after - before} MB, rss=${after} MB)`);
+                }
+            }
             const db = new Ominipg('direct', undefined, pool);
             db.emit('connected');
             return db;
         }
 
+        const beforeWorker = metricsEnabled ? getRssMb() : null;
         const worker = new Worker(
             new URL(`${(()=>'../worker/index.ts')()}`, import.meta.url).href,
             { type: "module" }
         );
+        if (metricsEnabled) {
+            const afterWorker = getRssMb();
+            if (afterWorker != null && beforeWorker != null) {
+                console.log(`Worker created (+${afterWorker - beforeWorker} MB, rss=${afterWorker} MB)`);
+            }
+        }
         const db = new Ominipg('worker', worker);
 
         const initMsg = {
@@ -105,6 +143,14 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         };
 
         await db.requests!.request<InitMsg>(initMsg, 60000); // Longer timeout for init
+        if (metricsEnabled) {
+            const afterInit = getRssMb();
+            // We don't have the intermediate post-create value here; this is total since creation
+            // but good enough to estimate worker+init overhead.
+            if (afterInit != null && beforeWorker != null) {
+                console.log(`Worker init complete (+${afterInit - beforeWorker} MB, rss=${afterInit} MB)`);
+            }
+        }
         db.emit('connected');
         return db;
     }
@@ -319,21 +365,3 @@ function createDrizzleAdapter(
         _ominipg: ominipgInstance,
     });
 }
-
-// async function createDrizzleAdapterAsync(
-//     ominipgInstance: Ominipg,
-//     schema?: Record<string, any>
-// ) {
-//     try {
-//         // Try to dynamically import drizzle
-//         const { drizzle } = await import('npm:drizzle-orm@0.44.2/pg-proxy');
-//         return createDrizzleAdapter(ominipgInstance, drizzle, schema);
-//     } catch (error) {
-//         throw new Error(
-//             'Failed to import drizzle-orm. Please install it explicitly:\n' +
-//             'import { drizzle } from "npm:drizzle-orm/pg-proxy";\n' +
-//             'Then use: withDrizzle(ominipg, drizzle, schema)\n\n' +
-//             `Original error: ${error instanceof Error ? error.message : String(error)}`
-//         );
-//     }
-// } 

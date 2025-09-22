@@ -1,7 +1,7 @@
 import { Ominipg } from '../src/client/index.ts';
 import { assert, assertEquals } from "jsr:@std/assert@1.0.13";
 
-const SYNC_DB_URL = Deno.env.get('SYNC_DB_URL')!;
+const SYNC_DB_URL = Deno.env.get('SYNC_DB_URL');
 const DB_FILE_URL = new URL(`./test.db`, import.meta.url).href; // absolute file URL
 const DB_URL = Deno.env.get('DB_URL') || DB_FILE_URL;
 const TABLE = `todos_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
@@ -26,7 +26,9 @@ if (DB_URL && DB_URL.startsWith('file://')) {
 }
 
 
-Deno.test("E2E Sync Test", async (t) => {
+if (!SYNC_DB_URL) {
+    Deno.test({ name: "E2E Sync Test", ignore: true, fn: () => {} });
+} else Deno.test("E2E Sync Test", async (t) => {
     // Clean remote state before connecting and initial sync
     const cleaner = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
     try {
@@ -85,7 +87,9 @@ Deno.test("E2E Sync Test", async (t) => {
     await db.close();
 });
 
-Deno.test("Initial Sync from Remote to Local", async (t) => {
+if (!SYNC_DB_URL) {
+    Deno.test({ name: "Initial Sync from Remote to Local", ignore: true, fn: () => {} });
+} else Deno.test("Initial Sync from Remote to Local", async (t) => {
     // 1. Set up the remote database with some initial data
     const remote = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
     let remoteId: any;
@@ -121,7 +125,9 @@ Deno.test("Initial Sync from Remote to Local", async (t) => {
     await db.close();
 });
 
-Deno.test("Initial Sync from Local to Remote", async (t) => {
+if (!SYNC_DB_URL) {
+    Deno.test({ name: "Initial Sync from Local to Remote", ignore: true, fn: () => {} });
+} else Deno.test("Initial Sync from Local to Remote", async (t) => {
     // 1. Ensure remote is clean (no 'todos' table)
     const remoteCleaner = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
     try {

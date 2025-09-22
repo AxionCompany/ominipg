@@ -52,7 +52,7 @@ export async function performInitialSync(syncFromTimestamp?: string) {
 
         await mainDb.exec(`SET session_replication_role = 'replica'`);
 
-        for (const tableRow of tablesResult.rows) {
+        for (const tableRow of tablesResult.rows as Array<{ tablename: string }>) {
             const tableName = tableRow.tablename;
             if (tableName.startsWith('_')) continue;
 
@@ -72,7 +72,7 @@ export async function performInitialSync(syncFromTimestamp?: string) {
                 }
                 
                 const dataResult = await client.query(query, params);
-                for (const row of dataResult.rows) {
+                for (const row of dataResult.rows as Array<Record<string, unknown>>) {
                     await localUpsert(tableName, row);
                 }
 

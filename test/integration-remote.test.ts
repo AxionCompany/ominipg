@@ -1,7 +1,7 @@
 import { Ominipg } from '../src/client/index.ts';
 import { assert, assertEquals } from "jsr:@std/assert@1.0.13";
 
-const SYNC_DB_URL = Deno.env.get('SYNC_DB_URL')!;
+const SYNC_DB_URL = Deno.env.get('SYNC_DB_URL');
 const DB_FILE_URL = new URL(`./test.db`, import.meta.url).href; // absolute file URL
 const DB_URL = Deno.env.get('DB_URL') || DB_FILE_URL;
 
@@ -25,7 +25,9 @@ if (DB_URL && DB_URL.startsWith('file://')) {
 }
 
 
-Deno.test("E2E Sync Test", async (t) => {
+if (!SYNC_DB_URL) {
+    Deno.test({ name: "E2E Sync Test", ignore: true, fn: () => {} });
+} else Deno.test("E2E Sync Test", async (t) => {
     // Clean remote state before connecting and initial sync
     const cleaner = new (await import('npm:pg')).Pool({ connectionString: SYNC_DB_URL });
     try {
