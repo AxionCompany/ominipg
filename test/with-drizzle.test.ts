@@ -1,7 +1,7 @@
 import { Ominipg, withDrizzle } from '../src/client/index.ts';
 import { drizzle } from 'npm:drizzle-orm/pg-proxy';
 import { pgTable, serial, varchar, integer } from 'npm:drizzle-orm/pg-core';
-import { assertEquals, assertExists } from "jsr:@std/assert@1.0.13";
+import { assertEquals, assertExists } from "jsr:@std/assert";
 
 // Example schema definition using Drizzle
 export const users = pgTable('users', {
@@ -29,7 +29,7 @@ Deno.test("withDrizzle - explicit drizzle factory", async () => {
 
     // 2. Create Drizzle adapter using explicit factory
     const db = withDrizzle(ominipg, drizzle, { users });
-    
+
     // 3. Test that the adapter has both Drizzle and Ominipg methods
     assertExists(db.query, "Should have Drizzle query method");
     assertExists(db.select, "Should have Drizzle select method");
@@ -40,7 +40,7 @@ Deno.test("withDrizzle - explicit drizzle factory", async () => {
 
     // 4. Test inserting data using Drizzle syntax
     await db.insert(users).values({ name: 'Alice', age: 30 });
-    
+
     // 5. Test querying using Drizzle syntax
     const result = await db.select().from(users);
     assertEquals(result.length, 1);

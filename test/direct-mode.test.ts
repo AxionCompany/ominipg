@@ -3,7 +3,6 @@ import { assertEquals, assertRejects } from "jsr:@std/assert@1.0.13";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const PG_URL = Deno.env.get('DB_URL_PG'); // postgres:// URL
-console.log('PG_URL', PG_URL);
 if (!PG_URL) {
     Deno.test({
         name: "Direct Postgres mode: skipped (missing DB_URL_PG)",

@@ -50,7 +50,7 @@ if (!SYNC_DB_URL) {
             `INSERT INTO todos (title) VALUES ($1) RETURNING id`,
             ['My Test Todo']
         );
-        localId = result.rows[0].id;
+        localId = result.rows[0].id as number;
 
         const { pushed } = await db.sync();
         assertEquals(pushed, 1, "Should have pushed 1 change");

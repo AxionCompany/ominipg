@@ -1,5 +1,9 @@
 import { TypedEmitter } from 'npm:tiny-typed-emitter@2.1.0';
 import type { OminipgConnectionOptions, OminipgClientEvents } from './types.ts';
+// Type-only import for pg to avoid loading it unless used by consumers at runtime
+// This allows full typing in direct mode without bundling the module unnecessarily in Deno.
+import type { Pool as PgPool, PoolClient as _PgPoolClient, QueryResult } from 'pg';
+import { Pool } from 'pg';
 import type { WorkerMsg, ResponseMsg, InitMsg, ExecMsg, SyncMsg, SyncSeqMsg, DiagnosticMsg, CloseMsg } from '../shared/types.ts';
 
 // Lightweight, best-effort RSS reader for metrics logging
@@ -27,8 +31,8 @@ function getRssMb(): number | null {
 
 class RequestManager {
     private _id = 0;
-    private readonly pending = new Map<number, { resolve: (value: any) => void, reject: (reason?: any) => void, timeoutId: number }>();
-    
+    private readonly pending = new Map<number, { resolve: (value: ResponseMsg | unknown) => void, reject: (reason?: unknown) => void, timeoutId: number }>();
+
     constructor(private readonly worker: Worker, private readonly emitter: TypedEmitter<OminipgClientEvents>) {
         this.worker.addEventListener("message", this.handleMessage.bind(this));
     }
@@ -60,15 +64,16 @@ class RequestManager {
     }
 
     public request<T>(message: Omit<WorkerMsg, 'reqId'>, timeout: number = 30000): Promise<T> {
-        return new Promise((resolve, reject) => {
+        return new Promise<T>((resolve, reject) => {
             const reqId = ++this._id;
-            
+
             const timeoutId = setTimeout(() => {
                 this.pending.delete(reqId);
                 reject(new Error(`Database request '${message.type}' timed out after ${timeout}ms`));
             }, timeout);
 
-            this.pending.set(reqId, { resolve, reject, timeoutId: Number(timeoutId) });
+            // Wrap the Promise's resolve to satisfy our stored callback type
+            this.pending.set(reqId, { resolve: (value: unknown) => resolve(value as T), reject, timeoutId: Number(timeoutId) });
 
             this.worker.postMessage({ ...message, reqId });
         });
@@ -83,9 +88,9 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     private readonly mode: 'worker' | 'direct';
     private readonly worker?: Worker;
     private readonly requests?: RequestManager;
-    private readonly pool?: any; // pg.Pool when in direct mode
+    private readonly pool?: PgPool; // pg.Pool when in direct mode
 
-    private constructor(mode: 'worker' | 'direct', worker?: Worker, pool?: any) {
+    private constructor(mode: 'worker' | 'direct', worker?: Worker, pool?: PgPool) {
         super();
         this.mode = mode;
         this.worker = worker;
@@ -103,8 +108,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         if (!useWorker && isPg && syncDisabled) {
             const before = metricsEnabled ? getRssMb() : null;
             console.log('Using direct Postgres mode');
-            const pg = await import('npm:pg@8.16.3');
-            const pool = new pg.Pool({ connectionString: url, max: 5 });
+            const pool = new Pool({ connectionString: url, max: 5 });
             const client = await pool.connect();
             try {
                 await client.query('SELECT 1');
@@ -143,7 +147,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
         const beforeWorker = metricsEnabled ? getRssMb() : null;
         const worker = new Worker(
-            new URL(`${(()=>'../worker/index.ts')()}`, import.meta.url).href,
+            new URL(`${(() => '../worker/index.ts')()}`, import.meta.url).href,
             { type: "module" }
         );
         if (metricsEnabled) {
@@ -177,25 +181,25 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
      * Executes a raw SQL query. This is the core method that can be used
      * directly or wrapped by ORMs like Drizzle.
      */
-    public async query(sql: string, params?: unknown[]): Promise<{ rows: any[] }> {
+    public async query<TRow extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: TRow[] }> {
         if (this.mode === 'direct') {
-            const client = await this.pool.connect();
+            const client = await this.pool!.connect();
             try {
-                const result = await client.query(sql, params ?? []);
-                return { rows: result.rows };
+                const result: QueryResult = await client.query(sql, params ?? []);
+                return { rows: result.rows as unknown as TRow[] };
             } finally {
                 client.release();
             }
         }
         const message: Omit<ExecMsg, "reqId"> = { type: 'exec', sql, params };
-        return await this.requests!.request<{ rows: any[] }>(message);
+        return await this.requests!.request<{ rows: TRow[] }>(message);
     }
 
     /**
      * @deprecated Use query() instead. This method is kept for backward compatibility.
      */
-    public async queryRaw(sql: string, params?: unknown[]): Promise<{ rows: any[] }> {
-        return this.query(sql, params);
+    public queryRaw<TRow extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: TRow[] }> {
+        return this.query<TRow>(sql, params);
     }
 
     /**
@@ -226,7 +230,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     /**
      * Retrieves diagnostic information about the worker's state.
      */
-    public async getDiagnosticInfo(): Promise<any> {
+    public async getDiagnosticInfo(): Promise<Record<string, unknown>> {
         if (this.mode === 'direct') {
             return {
                 mainDatabase: { type: 'postgres' },
@@ -234,7 +238,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
             };
         }
         const message: Omit<DiagnosticMsg, "reqId"> = { type: 'diagnostic' };
-        const { info } = await this.requests!.request<{ info: any }>(message);
+        const { info } = await this.requests!.request<{ info: Record<string, unknown> }>(message);
         return info;
     }
 
@@ -253,6 +257,15 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         this.emit('close');
     }
 }
+
+export type OminipgDrizzleMixin = {
+    sync: () => Promise<{ pushed: number }>;
+    syncSequences: () => Promise<{ synced: number }>;
+    getDiagnosticInfo: () => Promise<Record<string, unknown>>;
+    close: () => Promise<void>;
+    queryRaw: <TRow extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<{ rows: TRow[] }>;
+    _ominipg: Ominipg;
+};
 
 /**
  * Creates a Drizzle ORM adapter for an Ominipg instance.
@@ -278,11 +291,14 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
  * await db.sync();
  * ```
  */
-export function withDrizzle(
-    ominipgInstance: Ominipg, 
-    drizzleFactory: (callback: any, config?: any) => any,
-    schema?: Record<string, any>
-): any;
+export function withDrizzle<TDrizzle, TSchema extends Record<string, unknown>>(
+    ominipgInstance: Ominipg,
+    drizzleFactory: (
+        callback: (sql: string, params: unknown[], method?: string | undefined) => Promise<{ rows: unknown[] }>,
+        config?: { schema?: TSchema },
+    ) => TDrizzle,
+    schema?: TSchema
+): TDrizzle & OminipgDrizzleMixin;
 
 /**
  * Creates a Drizzle ORM adapter for an Ominipg instance (with automatic drizzle import).
@@ -307,19 +323,22 @@ export function withDrizzle(
  * ```
  */
 export function withDrizzle(
-    ominipgInstance: Ominipg, 
-    schema?: Record<string, any>
-): Promise<any>;
+    ominipgInstance: Ominipg,
+    schema?: Record<string, unknown>
+): Promise<never>;
 
-export function withDrizzle(
-    ominipgInstance: Ominipg, 
-    drizzleFactoryOrSchema?: ((callback: any, config?: any) => any) | Record<string, any>,
-    schema?: Record<string, any>
-): any | Promise<any> {
+export function withDrizzle<TDrizzle, TSchema extends Record<string, unknown>>(
+    ominipgInstance: Ominipg,
+    drizzleFactoryOrSchema?: ((callback: (sql: string, params: unknown[], method?: string | undefined) => Promise<{ rows: unknown[] }>, config?: { schema?: TSchema }) => TDrizzle) | TSchema,
+    schema?: TSchema
+): (TDrizzle & OminipgDrizzleMixin) | Promise<never> {
     // Check if first argument is the drizzle factory function
     if (typeof drizzleFactoryOrSchema === 'function') {
         // Version 1: User provided drizzle factory
-        return createDrizzleAdapter(ominipgInstance, drizzleFactoryOrSchema as (callback: any, config?: any) => any, schema);
+        return createDrizzleAdapter(ominipgInstance, drizzleFactoryOrSchema as (
+            callback: (sql: string, params: unknown[], method?: string | undefined) => Promise<{ rows: unknown[] }>,
+            config?: { schema?: TSchema },
+        ) => TDrizzle, schema as TSchema);
     } else {
         // Version 2: Auto-import drizzle (async)
         throw new Error('Auto-import of drizzle is not supported yet. Please use the explicit import: import { drizzle } from "npm:drizzle-orm/pg-proxy";');
@@ -327,37 +346,30 @@ export function withDrizzle(
     }
 }
 
-function createDrizzleAdapter(
+function createDrizzleAdapter<TDrizzle, TSchema extends Record<string, unknown>>(
     ominipgInstance: Ominipg,
-    drizzleFactory: (callback: any, config?: any) => any,
-    schema?: Record<string, any>
-) {
+    drizzleFactory: (callback: (sql: string, params: unknown[], method?: string | undefined) => Promise<{ rows: unknown[] }>, config?: { schema?: TSchema }) => TDrizzle,
+    schema?: TSchema
+): TDrizzle & OminipgDrizzleMixin {
     const drizzleProxy = drizzleFactory(
-        async (sql: string, params: any[], method?: 'run' | 'all' | 'values' | 'get' | 'execute') => {
+        async (sql: string, params: unknown[], method?: string | undefined) => {
             try {
-                const result = await ominipgInstance.query(sql, params);
-                
+                const result = await ominipgInstance.query(sql, params as unknown[]);
+
                 // Handle different return formats based on method
-                if (method === 'get') {
-                    // For 'get' method, return single row as string[]
-                    const row = result.rows[0];
-                    if (row && typeof row === 'object') {
-                        return { rows: Object.values(row) };
-                    }
-                    return { rows: [] };
-                } else if (method === 'all') {
+                if ((method as unknown as string | undefined) === 'all') {
                     // For 'all' method, convert objects to arrays (string[][])
                     if (result.rows.length > 0 && typeof result.rows[0] === 'object') {
                         const columnNames = Object.keys(result.rows[0]);
-                        const arrayRows = result.rows.map(row => 
-                            columnNames.map(col => (row as any)[col])
+                        const arrayRows = result.rows.map(row =>
+                            columnNames.map(col => (row as Record<string, unknown>)[col])
                         );
-                        return { rows: arrayRows };
+                        return { rows: arrayRows as unknown[] };
                     }
                     return { rows: [] };
                 } else {
-                    // For other methods ('run', 'values', 'execute', or undefined), return objects as-is
-                    return { rows: result.rows };
+                    // For other methods ('execute' or undefined), return objects as-is
+                    return { rows: result.rows as unknown[] };
                 }
             } catch (error) {
                 console.error('Database query error:', error);
@@ -368,18 +380,17 @@ function createDrizzleAdapter(
     );
 
     // Add Ominipg-specific methods to the Drizzle instance
-    return Object.assign(drizzleProxy, {
+    return Object.assign(drizzleProxy as unknown as object, {
         // Ominipg sync methods
         sync: ominipgInstance.sync.bind(ominipgInstance),
         syncSequences: ominipgInstance.syncSequences.bind(ominipgInstance),
         getDiagnosticInfo: ominipgInstance.getDiagnosticInfo.bind(ominipgInstance),
         close: ominipgInstance.close.bind(ominipgInstance),
-        
+
         // Raw query access
         queryRaw: ominipgInstance.query.bind(ominipgInstance),
-        // query: ominipgInstance.query.bind(ominipgInstance),
-        
+
         // Access to the underlying Ominipg instance
         _ominipg: ominipgInstance,
-    });
+    }) as TDrizzle & OminipgDrizzleMixin;
 }
