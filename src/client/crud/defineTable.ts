@@ -1,0 +1,153 @@
+import type {
+  CrudSchemas,
+  JsonSchema,
+  TableKeyDefinition,
+  TableTimestampColumns,
+  TableTimestampConfig,
+  TableSchemaConfig,
+  WritableRowForTable,
+  CrudRow,
+} from "./types.ts";
+
+type Primitive = string | number | boolean | bigint | symbol | null | undefined;
+
+type ConstifyArray<T extends readonly unknown[]> =
+  number extends T["length"]
+    ? readonly Constify<T[number]>[]
+    : { readonly [K in keyof T]: Constify<T[K]> };
+
+type Constify<T> = T extends Primitive ? T
+  : T extends (...args: unknown[]) => unknown ? T
+  : T extends readonly unknown[] ? ConstifyArray<T>
+  : T extends unknown[] ? ConstifyArray<T>
+  : T extends Map<infer K, infer V> ? ReadonlyMap<Constify<K>, Constify<V>>
+  : T extends Set<infer Item> ? ReadonlySet<Constify<Item>>
+  : T extends object ? { readonly [K in keyof T]: Constify<T[K]> }
+  : T;
+
+type Simplify<T> = { [K in keyof T]: T[K] } & {};
+
+type KeysInput =
+  | readonly TableKeyDefinition[]
+  | TableKeyDefinition[];
+
+type TimestampsInput = boolean | TableTimestampConfig | undefined;
+
+export type SchemaConfigInput<
+  Schema,
+  Keys extends KeysInput,
+  Timestamps extends TimestampsInput = undefined,
+> = {
+  schema: Schema;
+  keys: Keys;
+  timestamps?: Timestamps;
+};
+
+type NormalizeKeys<K> = K extends readonly TableKeyDefinition[] ? K
+  : K extends TableKeyDefinition[] ? readonly TableKeyDefinition[]
+  : never;
+
+type NormalizeTimestamps<T> = T extends boolean | TableTimestampConfig
+  ? TableTimestampColumns
+  : T extends undefined ? undefined
+  : never;
+
+type FrozenConfig<C> = C extends SchemaConfigInput<
+  infer Schema,
+  infer Keys extends KeysInput,
+  infer Timestamps extends TimestampsInput
+> ? Schema extends JsonSchema
+  ? NormalizeKeys<Keys> extends never ? never
+  : TableSchemaConfig<
+    Constify<Schema>,
+    NormalizeKeys<Keys>,
+    NormalizeTimestamps<Timestamps>
+  >
+  : never
+  : never;
+
+type FrozenConfigMap<S extends Record<string, SchemaConfigInput<JsonSchema, KeysInput, TimestampsInput>>> = {
+  readonly [K in keyof S]: FrozenConfig<S[K]>;
+};
+
+type FrozenSchemas<
+  S extends Record<
+    string,
+    SchemaConfigInput<JsonSchema, KeysInput, TimestampsInput>
+  >,
+> = {
+  readonly [K in keyof S]: FrozenConfig<S[K]> & {
+    readonly $inferSelect: Simplify<CrudRow<FrozenConfigMap<S>, K>>;
+    readonly $inferInsert: Simplify<WritableRowForTable<FrozenConfigMap<S>, K>>;
+  };
+};
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object") {
+    Object.freeze(value);
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      const child = (value as Record<string, unknown>)[key];
+      if (child && typeof child === "object" && !Object.isFrozen(child)) {
+        deepFreeze(child);
+      }
+    }
+  }
+  return value;
+}
+
+function toReadonlyArray<T>(values: readonly T[] | T[]): readonly T[] {
+  return Array.isArray(values) ? [...values] as const : values;
+}
+
+function toReadonlyKeys(
+  keys: readonly TableKeyDefinition[] | TableKeyDefinition[],
+): readonly TableKeyDefinition[] {
+  const list = Array.isArray(keys) ? keys : [...keys];
+  return list.map((key) => {
+    const frozen = {
+      property: key.property,
+      ...(key.$ref ? { $ref: key.$ref } : {}),
+    } as TableKeyDefinition;
+    return deepFreeze(frozen);
+  }) as readonly TableKeyDefinition[];
+}
+
+const DEFAULT_TIMESTAMP_COLUMNS: TableTimestampColumns = Object.freeze({
+  createdAt: "created_at",
+  updatedAt: "updated_at",
+}) as TableTimestampColumns;
+
+function normalizeTimestamps(
+  value: TimestampsInput,
+): TableTimestampColumns | undefined {
+  if (!value) return undefined;
+  if (value === true) return DEFAULT_TIMESTAMP_COLUMNS;
+  const createdAt = value.createdAt ?? DEFAULT_TIMESTAMP_COLUMNS.createdAt;
+  const updatedAt = value.updatedAt ?? DEFAULT_TIMESTAMP_COLUMNS.updatedAt;
+  return Object.freeze({ createdAt, updatedAt }) as TableTimestampColumns;
+}
+
+export function defineSchema<
+  const S extends Record<
+    string,
+    SchemaConfigInput<JsonSchema, KeysInput, TimestampsInput>
+  >,
+>(schemas: S): FrozenSchemas<S> {
+  const result = {} as Record<string, unknown>;
+  for (const tableName of Object.keys(schemas) as Array<keyof S>) {
+    const config = schemas[tableName];
+    const frozenConfig = deepFreeze({
+      schema: deepFreeze(structuredClone(config.schema)) as
+        Constify<S[typeof tableName]["schema"]>,
+      keys: toReadonlyArray(
+        toReadonlyKeys(config.keys as TableKeyDefinition[]),
+      ) as NormalizeKeys<S[typeof tableName]["keys"]>,
+      timestamps: normalizeTimestamps(config.timestamps) as NormalizeTimestamps<
+        S[typeof tableName]["timestamps"]
+      >,
+    }) as FrozenConfig<S[typeof tableName]>;
+    result[tableName as string] = frozenConfig;
+  }
+  return Object.freeze(result) as FrozenSchemas<S>;
+}
+

@@ -1,402 +1,457 @@
-# Ominipg 🐘: The All-in-One PostgreSQL Toolkit for Deno
+# Ominipg
 
-[![JSR](https://img.shields.io/badge/jsr-%40oxian%2Fominipg-blue?style=for-the-badge&logo=deno)](https://jsr.io/@oxian/ominipg)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](./LICENSE)
-[![Deno 2.0+](https://img.shields.io/badge/deno-%5E2.0-brightgreen?logo=deno&style=for-the-badge)](https://deno.com)
+> The flexible, all-in-one PostgreSQL toolkit for Deno
 
-**Ominipg is the flexible, all-in-one toolkit for PostgreSQL in Deno.** Whether
-you need a simple local database, a powerful offline-first solution with
-real-time sync, or just a non-blocking client for your server, Ominipg adapts to
-your needs.
+**Ominipg** is a modern PostgreSQL client for Deno that brings the best of both worlds: the power of PostgreSQL with the simplicity of local-first development. Run in-memory databases with PGlite or connect to real PostgreSQL instances, all with the same intuitive API.
 
-By default, Ominipg runs the database connection in a dedicated worker, keeping
-your application responsive. For ultra low-memory scenarios, a direct Postgres
-mode (no Worker) is also available.
+[![JSR](https://jsr.io/badges/@oxian/ominipg)](https://jsr.io/@oxian/ominipg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Deno](https://img.shields.io/badge/deno-%5E1.40-blue?logo=deno)](https://deno.land)
 
 ---
 
-## ✨ One Library, Many Faces
+## ✨ Why Ominipg?
 
-Ominipg is designed to be your go-to database client, no matter the
-architecture. Pick the pattern that fits your project.
+If you've used **Mongoose** for MongoDB, you'll feel right at home. Ominipg brings that same developer-friendly experience to PostgreSQL, with powerful features for modern applications:
 
-### 1. The Simple Local Database
+| Feature | Description |
+|---------|-------------|
+| 🚀 **Zero Config** | Works out of the box with in-memory databases or PostgreSQL |
+| 🔄 **Local-First Ready** | Built-in sync between local PGlite and remote PostgreSQL |
+| 🎨 **Multiple APIs** | Choose between raw SQL, Drizzle ORM, or Mongoose-style CRUD |
+| ⚡ **Performance Modes** | Worker-based isolation or direct mode for maximum speed |
+| 🧪 **Testing Made Easy** | In-memory databases perfect for tests - no setup required |
+| 🔌 **Extensions Support** | Use PGlite extensions like vector search, UUID generation |
+| 📦 **Type-Safe** | Full TypeScript support with schema inference |
 
-_Perfect for scripts, local development, and standalone applications._
-
-Get the power of PostgreSQL without running a server. Ominipg uses PGlite to
-create a file-based database that's fast, reliable, and self-contained.
-
-```typescript
-const db = await Ominipg.connect({
-  url: "file://./my-app.db", // Just a local file
-  schemaSQL: ["CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)"],
-});
-// db is ready for local queries!
-```
-
-### 2. The Syncing Edge Database
-
-_The ultimate solution for offline-first and edge applications._
-
-Combine a local PGlite database with real-time, bidirectional synchronization to
-a remote PostgreSQL server. Work seamlessly offline and sync automatically when
-a connection is restored.
+### Compared to Other Solutions
 
 ```typescript
-const db = await Ominipg.connect({
-  url: "file://./local-cache.db",
-  syncUrl: Deno.env.get("REMOTE_DATABASE_URL"), // Your remote Postgres
-  schemaSQL: ["CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)"],
-});
-// Local and remote data are now in sync!
+// ❌ Traditional PostgreSQL clients
+// - Complex setup for local development
+// - No built-in sync capabilities
+// - Limited type safety without ORMs
+
+// ❌ Heavy ORMs (Prisma, TypeORM)
+// - Large dependencies and build steps
+// - Code generation required
+// - Less flexibility for raw SQL
+
+// ✅ Ominipg
+// - Works immediately with :memory: databases
+// - Built-in sync for local-first apps
+// - Choose your API style (SQL, ORM, or CRUD)
+// - Lightweight and flexible
 ```
 
-### 3. The Non-Blocking Postgres Client
+---
 
-_A modern, performant way to connect to any standard PostgreSQL database._
-
-Use Ominipg as a proxy to your primary database. All connections and queries run
-in a background worker by default, preventing database operations from ever
-blocking your main application thread.
-
-```typescript
-const db = await Ominipg.connect({
-  url: Deno.env.get("PRIMARY_DATABASE_URL"), // Your standard Postgres
-  schemaSQL: ["CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)"],
-});
-// Now querying your remote DB without blocking the main thread!
-```
-
-#### Workerless Direct Mode (memory-optimized)
-
-If you don't need local PGlite or sync and want the smallest possible memory
-footprint, you can bypass the Worker and connect directly to Postgres:
-
-```typescript
-const db = await Ominipg.connect({
-  url: Deno.env.get("PRIMARY_DATABASE_URL")!,
-  useWorker: false, // direct Postgres mode (no Worker, no PGlite)
-});
-
-// Note: sync-related APIs (e.g. db.sync()) are not available in this mode.
-```
-
-## 💡 Core Features
-
-- 🚀 **Always Non-Blocking:** By running in a worker, Ominipg guarantees your
-  main thread is always free for critical tasks.
-- 🛠️ **Choose Your Architecture:** From local-only to globally synced, Ominipg
-  adapts to your project's needs without changing your code.
-- 🎯 **ORM-Agnostic with Built-in Drizzle Support:** Use raw SQL for maximum
-  control, or the built-in `withDrizzle()` helper for type-safe queries. No
-  forced dependencies.
-- 🔄 **Intelligent Sync & Conflict Resolution:** For edge use cases, you get
-  automatic Last-Write-Wins conflict resolution and real-time bidirectional
-  sync.
-- ⚙️ **Zero-Config Schema Management:** Define your schema once, and Ominipg
-  handles the setup everywhere.
-
-## 🚀 Quick Start
-
-Ominipg is ORM-agnostic! You can use it with raw SQL or optionally with any ORM
-like Drizzle.
-
-### Raw SQL Usage (No Dependencies)
-
-**`main.ts`**
+## 🚀 Quick Start (30 seconds)
 
 ```typescript
 import { Ominipg } from "jsr:@oxian/ominipg";
 
+// 1. Connect to an in-memory database
 const db = await Ominipg.connect({
-  url: "postgres://localhost:5432/mydb",
-  schemaSQL: [
-    `CREATE TABLE IF NOT EXISTS todos (
+  url: ":memory:",
+  schemaSQL: [`
+    CREATE TABLE users (
       id SERIAL PRIMARY KEY,
-      title TEXT NOT NULL,
-      completed BOOLEAN DEFAULT false,
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    )`,
-  ],
+      name TEXT NOT NULL,
+      email TEXT UNIQUE
+    )
+  `],
 });
 
-// Execute raw SQL queries
-const todos = await db.query("SELECT * FROM todos WHERE completed = $1", [
-  false,
-]);
-console.log(todos.rows);
+// 2. Insert data
+await db.query(
+  "INSERT INTO users (name, email) VALUES ($1, $2)",
+  ["Alice", "alice@example.com"]
+);
 
-// Insert data
-await db.query("INSERT INTO todos (title) VALUES ($1)", ["Learn Ominipg"]);
+// 3. Query data
+const users = await db.query("SELECT * FROM users");
+console.log(users.rows); // [{ id: 1, name: "Alice", email: "alice@example.com" }]
 
-// Sync with remote (if configured)
-await db.sync();
+await db.close();
 ```
 
-### Optional Drizzle Integration
+**That's it!** No PostgreSQL installation needed. Perfect for development and testing.
 
-If you prefer using Drizzle ORM, you can easily integrate it using the built-in
-`withDrizzle` helper:
+[Try it now →](https://dash.deno.com/playground/ominipg-quickstart) | [See more examples →](./examples)
+
+---
+
+## 📦 Installation
+
+### Using JSR (Recommended)
 
 ```typescript
-import { Ominipg, withDrizzle } from "jsr:@oxian/ominipg";
-import { drizzle } from "npm:drizzle-orm/pg-proxy";
-import * as schema from "./schema.ts";
+// Full library
+import { Ominipg } from "jsr:@oxian/ominipg";
 
-const ominipg = await Ominipg.connect({
-  url: "postgres://localhost:5432/mydb",
-  schemaSQL: schema.schemaDDL,
+// CRUD module only (use with any database library)
+import { defineSchema, createCrudApi } from "jsr:@oxian/ominipg/crud";
+```
+
+### Using Deno
+
+```bash
+deno add @oxian/ominipg
+```
+
+### Permissions
+
+Ominipg needs the following permissions:
+
+```bash
+# For development (all permissions)
+deno run --allow-all your-app.ts
+
+# For production (minimal permissions)
+deno run --allow-net --allow-read --allow-write --allow-env your-app.ts
+```
+
+---
+
+## 🎯 Core Features
+
+### 1. Multiple Database Modes
+
+```typescript
+// In-memory database (PGlite) - perfect for development/testing
+const localDb = await Ominipg.connect({ url: ":memory:" });
+
+// PostgreSQL connection - production ready
+const remoteDb = await Ominipg.connect({ 
+  url: "postgresql://user:pass@localhost:5432/mydb" 
 });
 
-// Create Drizzle adapter with explicit drizzle import
+// Local-first with sync - best of both worlds
+const syncDb = await Ominipg.connect({
+  url: ":memory:",
+  syncUrl: "postgresql://user:pass@localhost:5432/mydb"
+});
+```
+
+### 2. Flexible Query Styles
+
+Choose the API that fits your needs:
+
+#### Raw SQL (Full Control)
+
+```typescript
+const users = await db.query(
+  "SELECT * FROM users WHERE age > $1",
+  [18]
+);
+```
+
+#### Drizzle ORM (Type-Safe)
+
+```typescript
+import { withDrizzle } from "jsr:@oxian/ominipg";
+import { drizzle } from "npm:drizzle-orm/pg-proxy";
+
 const db = withDrizzle(ominipg, drizzle, schema);
 
-// Use Drizzle syntax + Ominipg methods
-const allTodos = await db.select().from(schema.todos);
-await db.sync();
+// Fully typed queries
+const youngUsers = await db.select()
+  .from(users)
+  .where(lt(users.age, 30));
 ```
 
-**Schema Definition Example:**
+[Learn more about Drizzle integration →](./docs/DRIZZLE.md)
+
+#### CRUD Helpers (Mongoose-Style)
 
 ```typescript
-import { boolean, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { Ominipg, defineSchema } from "jsr:@oxian/ominipg";
 
-export const todos = pgTable("todos", {
-  id: serial("id").primaryKey(),
-  title: text("title").notNull(),
-  completed: boolean("completed").default(false),
-  updated_at: timestamp("updated_at").defaultNow(),
+const schemas = defineSchema({
+  users: {
+    schema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        name: { type: "string" },
+        email: { type: "string" },
+        age: { type: "number" }
+      },
+      required: ["id", "name", "email"]
+    },
+    keys: [{ property: "id" }],
+    timestamps: true // Auto-manage created_at/updated_at
+  }
 });
-
-export const schemaDDL = [
-  `CREATE TABLE IF NOT EXISTS todos (
-    id SERIAL PRIMARY KEY,
-    title TEXT NOT NULL,
-    completed BOOLEAN DEFAULT false,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-  )`,
-];
-```
-
-**Why use `withDrizzle`?**
-
-- ✅ **Zero setup** - Just pass your schema and you're ready
-- ✅ **Type-safe** - Full TypeScript support out of the box
-- ✅ **Best of both worlds** - Drizzle syntax + Ominipg features
-- ✅ **No lock-in** - Switch between raw SQL and Drizzle anytime
-
-## 🤔 Which Approach Should I Use?
-
-| Feature              | Raw SQL      | `withDrizzle()` Helper |
-| -------------------- | ------------ | ---------------------- |
-| **Setup complexity** | ⚡ Minimal   | ⚡ Minimal             |
-| **Type safety**      | ❌ Manual    | ✅ Automatic           |
-| **Query builder**    | ❌ Write SQL | ✅ Drizzle syntax      |
-| **Performance**      | ✅ Maximum   | ✅ Excellent           |
-| **Learning curve**   | ✅ Just SQL  | 📚 SQL + Drizzle       |
-| **Bundle size**      | ✅ Smallest  | 📦 +Drizzle ORM        |
-| **IntelliSense**     | ❌ Basic     | ✅ Full autocomplete   |
-
-**Choose Raw SQL when:** You prefer writing SQL directly, want minimum bundle
-size, or have simple query needs.
-
-**Choose `withDrizzle()` when:** You want type safety, love autocompletion, or
-are building complex applications.
-
-## ⚡ Getting Started in 30 Seconds
-
-**Try it with raw SQL:**
-
-```bash
-# No installation needed with Deno!
-deno run --allow-net https://deno.land/x/ominipg/examples/quick-start.ts
-```
-
-**Try it with Drizzle:**
-
-```typescript
-import { Ominipg, withDrizzle } from "jsr:@oxian/ominipg";
-import { drizzle } from "npm:drizzle-orm/pg-proxy";
-import { pgTable, serial, text } from "npm:drizzle-orm/pg-core";
-
-const users = pgTable("users", {
-  id: serial("id").primaryKey(),
-  name: text("name").notNull(),
-});
-
-const ominipg = await Ominipg.connect({
-  url: ":memory:", // In-memory database
-  schemaSQL: ["CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)"],
-});
-
-const db = await withDrizzle(ominipg, drizzle, { users });
-await db.insert(users).values({ name: "Alice" });
-const allUsers = await db.select().from(users);
-console.log(allUsers); // [{ id: 1, name: 'Alice' }]
-```
-
-## ⚙️ Connection Options
-
-| Option              | Type       | Description                                                                                                               |
-| ------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `url`               | `string`   | Main database URL. Use `file://` for local or `postgres://` for remote. Defaults to in-memory.                            |
-| `syncUrl`           | `string`   | (Optional) The remote PostgreSQL URL for enabling bidirectional sync with a local `file://` DB.                           |
-| `schemaSQL`         | `string[]` | An array of SQL DDL strings for schema creation.                                                                          |
-| `lwwColumn`         | `string`   | (Optional) The column for Last-Write-Wins conflict resolution. Defaults to `updated_at`.                                  |
-| `disableAutoPush`   | `boolean`  | (Optional) If `true`, disables automatic pushing of local changes. Use `db.sync()` to push manually. Defaults to `false`. |
-| `pgliteExtensions`  | `string[]` | (Optional) Array of PGlite extension names to load dynamically. Only applicable when using PGlite. See extensions section below. |
-| `useWorker`         | `boolean`  | (Optional) If `false`, enables direct Postgres mode (no Worker, no PGlite). Defaults to `true`. |
-
-## 🔌 PGlite Extensions
-
-When using PGlite (local or in-memory databases), you can dynamically load extensions to add extra functionality. Extensions are automatically imported from their respective paths and activated in your database.
-
-### Available Extensions
-
-PGlite extensions that work with Ominipg:
-
-- **`uuid-ossp`** - UUID generation functions ✅
-- **`vector`** - Vector similarity search and embeddings (pgvector) ✅
-- **`ltree`** - Hierarchical tree-like data types  
-- **`pg_trgm`** - Trigram matching for fuzzy text search
-- **`fuzzystrmatch`** - Fuzzy string matching
-
-> **Note:** Extensions are automatically loaded and activated. Your application can immediately use extension functions once loaded.
-
-### Basic UUID Usage
-
-```typescript
-import { Ominipg } from "jsr:@oxian/ominipg";
 
 const db = await Ominipg.connect({
-  url: ':memory:',
-  pgliteExtensions: ['uuid_ossp'], // Load UUID extension
-  schemaSQL: [
-    `CREATE TABLE users (
+  url: ":memory:",
+  schemas
+});
+
+// Type inference - no imports needed!
+type User = typeof schemas.users.$inferSelect;
+type NewUser = typeof schemas.users.$inferInsert;
+
+// MongoDB-like API
+const user = await db.crud.users.create({
+  id: "1",
+  name: "Alice",
+  email: "alice@example.com",
+  age: 25
+});
+
+// Powerful filters
+const adults = await db.crud.users.find({
+  age: { $gte: 18 }
+});
+
+// Relations and populate
+const posts = await db.crud.posts.find(
+  { published: true },
+  { populate: ["author", "tags"] }
+);
+```
+
+**Use CRUD with Other Libraries:**
+
+The CRUD module works standalone with any database library:
+
+```typescript
+import { defineSchema, createCrudApi } from "jsr:@oxian/ominipg/crud";
+import { Pool } from "npm:pg";
+
+const pool = new Pool({ connectionString: "postgresql://..." });
+
+const schemas = defineSchema({
+  users: { /* schema */ }
+});
+
+// Create CRUD API with your own query function
+const crud = createCrudApi(schemas, async (sql, params) => {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(sql, params ?? []);
+    return { rows: result.rows };
+  } finally {
+    client.release();
+  }
+});
+
+// Use it!
+const users = await crud.users.find({ age: { $gte: 18 } });
+```
+
+[Learn more about CRUD API →](./docs/CRUD.md)
+
+### 3. Local-First Sync
+
+Build offline-capable apps with automatic sync:
+
+```typescript
+const db = await Ominipg.connect({
+  url: ":memory:", // Local PGlite database
+  syncUrl: "postgresql://...", // Remote PostgreSQL
+  schemaSQL: [/* your schema */]
+});
+
+// Work offline - all data stored locally
+await db.crud.users.create({ name: "Alice" });
+await db.crud.posts.create({ title: "Hello World" });
+
+// Sync when ready
+const result = await db.sync();
+console.log(`Synced ${result.pushed} changes`);
+```
+
+[Learn more about sync →](./docs/SYNC.md)
+
+### 4. PGlite Extensions
+
+Enhance your local database with powerful extensions:
+
+```typescript
+const db = await Ominipg.connect({
+  url: ":memory:",
+  pgliteExtensions: ["uuid_ossp", "vector"], // Load extensions
+  pgliteConfig: {
+    initialMemory: 256 * 1024 * 1024, // 256 MB for larger embeddings
+  },
+  schemaSQL: [`
+    CREATE TABLE products (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-      name TEXT NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    )`
-  ]
+      name TEXT,
+      embedding VECTOR(384)
+    )
+  `]
 });
 
-// Use UUID functions immediately
-const result = await db.query('SELECT uuid_generate_v4() as new_id');
-console.log('Generated UUID:', result.rows[0].new_id);
-
-// Insert with auto-generated UUIDs
-await db.query('INSERT INTO users (name) VALUES ($1)', ['Alice']);
-const users = await db.query('SELECT * FROM users');
-console.log('User with UUID:', users.rows[0]);
-```
-
-### Vector Search Example
-
-```typescript
-const db = await Ominipg.connect({
-  url: ':memory:',
-  pgliteExtensions: ['vector'], // Load pgvector extension
-  schemaSQL: [
-    `CREATE TABLE documents (
-      id SERIAL PRIMARY KEY,
-      content TEXT,
-      embedding VECTOR(3)
-    )`,
-    `CREATE INDEX ON documents USING ivfflat (embedding vector_cosine_ops)`
-  ]
-});
-
-// Insert with vector embeddings
-await db.query(`
-  INSERT INTO documents (content, embedding) VALUES 
-  ($1, $2::vector), ($3, $4::vector)
-`, [
-  'Hello world', '[0.1, 0.2, 0.3]',
-  'Goodbye world', '[0.4, 0.5, 0.6]'
-]);
-
-// Perform similarity search
+// Use vector similarity search
 const similar = await db.query(`
-  SELECT content, (embedding <=> $1::vector) as distance
-  FROM documents 
-  ORDER BY embedding <=> $1::vector 
+  SELECT * FROM products
+  ORDER BY embedding <=> $1::vector
   LIMIT 5
-`, ['[0.1, 0.2, 0.4]']);
-
-console.log('Similar documents:', similar.rows);
+`, [searchVector]);
 ```
 
-### Complete Example with Multiple Extensions
+[Learn more about extensions →](./docs/EXTENSIONS.md)
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     Your Application                    │
+└───────────────────┬─────────────────────────────────────┘
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │   Ominipg Client      │
+        │  - query()            │
+        │  - crud.*             │
+        │  - sync()             │
+        └───────┬───────────────┘
+                │
+        ┌───────┴──────────┐
+        │                  │
+        ▼                  ▼
+┌──────────────┐   ┌──────────────┐
+│ Worker Mode  │   │ Direct Mode  │
+│ (Isolated)   │   │ (Fast)       │
+└──────┬───────┘   └──────┬───────┘
+       │                  │
+       ▼                  ▼
+┌──────────────┐   ┌──────────────┐
+│   PGlite     │   │ PostgreSQL   │
+│ (In-Memory)  │   │  (Remote)    │
+└──────────────┘   └──────────────┘
+       │                  │
+       └────────┬─────────┘
+                │
+                ▼ (Optional Sync)
+        ┌──────────────┐
+        │ Remote DB    │
+        │ (PostgreSQL) │
+        └──────────────┘
+```
+
+**Worker Mode** (default): Runs database operations in a Web Worker for isolation and performance.
+
+**Direct Mode**: Connects directly to PostgreSQL for maximum speed (automatically used when connecting to PostgreSQL without sync).
+
+[Learn more about architecture →](./docs/ARCHITECTURE.md)
+
+---
+
+## 📖 Documentation
+
+### Guides
+- [API Reference](./docs/API.md) - Complete API documentation
+- [CRUD API Guide](./docs/CRUD.md) - Mongoose-style CRUD operations
+- [Drizzle Integration](./docs/DRIZZLE.md) - Type-safe ORM queries
+- [Sync Guide](./docs/SYNC.md) - Local-first sync strategies
+- [Extensions](./docs/EXTENSIONS.md) - Using PGlite extensions
+- [Architecture](./docs/ARCHITECTURE.md) - How Ominipg works internally
+
+### Examples
+- [Quick Start](./examples/quick-start.ts) - Get started in 30 seconds
+- [Drizzle ORM](./examples/with-drizzle-simple.ts) - Type-safe queries
+- [Standalone CRUD](./examples/crud-standalone.ts) - Use CRUD module with any database library
+- [PGlite Extensions](./examples/pglite-extensions.ts) - UUID, Vector search, etc.
+
+---
+
+## 🎓 Common Use Cases
+
+### Local Development & Testing
 
 ```typescript
+// Perfect for tests - no setup, super fast
+const db = await Ominipg.connect({ url: ":memory:" });
+```
+
+### Local-First Applications
+
+```typescript
+// Build offline-capable apps
 const db = await Ominipg.connect({
-  url: 'file://./app.db',
-  pgliteExtensions: ['uuid_ossp', 'vector'], // Load both extensions
-  schemaSQL: [
-    `CREATE TABLE products (
-      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-      name TEXT NOT NULL,
-      description TEXT,
-      embedding VECTOR(128), -- For similarity search
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    )`,
-    `CREATE INDEX ON products USING ivfflat (embedding vector_cosine_ops)`
-  ]
+  url: ":memory:",
+  syncUrl: "postgresql://..." // Sync when online
 });
-
-// Insert product with auto-generated UUID and embedding
-await db.query(`
-  INSERT INTO products (name, description, embedding) VALUES 
-  ($1, $2, $3::vector)
-`, [
-  'Laptop', 
-  'High-performance laptop', 
-  '[0.1, 0.2, 0.3, ...]' // 128-dimensional vector
-]);
-
-// Find similar products
-const similarProducts = await db.query(`
-  SELECT name, description, (embedding <=> $1::vector) as similarity
-  FROM products 
-  ORDER BY embedding <=> $1::vector 
-  LIMIT 5
-`, ['[0.1, 0.2, 0.3, ...]']);
 ```
 
-**Try the complete working example:**
-```bash
-deno run --allow-all https://deno.land/x/ominipg/examples/pglite-extensions.ts
+### Edge Computing
+
+```typescript
+// Run PostgreSQL at the edge with Deno Deploy
+const db = await Ominipg.connect({
+  url: "postgresql://..." // Connect to your database
+});
 ```
 
-> **Note:** Extensions are only available when using PGlite (local/in-memory databases). They have no effect when connecting to a standard PostgreSQL server.
+### Type-Safe Development
+
+```typescript
+// Use with Drizzle for full type safety
+const db = withDrizzle(ominipg, drizzle, schema);
+```
 
 ---
 
-## 🧪 Running Tests
+## 🗺️ Roadmap
 
-From the repository root:
+We're working on exciting features:
 
-```bash
-deno test -A --env -r .
-```
+- ✅ **CRUD API** - Mongoose-style helpers (v0.3.0)
+- 🚧 **Cross-Runtime Support** - Node.js, Bun, Browser support
+- 📊 **Connection Pooling** - Advanced connection management
 
-Environment variables:
-
-- `SYNC_DB_URL`: Postgres URL used for sync integration tests
-- `DB_URL_PG` (optional): Postgres URL used for direct Postgres mode test
-
-Notes:
-
-- Tests only include files under `test/**/*.ts` (configured in `deno.json`).
-- Local file-based databases use absolute `file://` URLs to avoid CWD issues.
+[See full roadmap →](./ROADMAP.md)
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request.
+We welcome contributions! Here's how to get started:
 
-## License
+```bash
+# Clone the repository
+git clone https://github.com/AxionCompany/ominipg.git
+cd ominipg
 
-[MIT](./LICENSE)
+# Run tests
+deno test --allow-all
+
+# Run examples
+deno run --allow-all examples/quick-start.ts
+```
+
+Please read our [Contributing Guide](./CONTRIBUTING.md) for details on our code of conduct and development process.
+
+---
+
+## 📄 License
+
+MIT License - see [LICENSE](./LICENSE) for details.
+
+---
+
+## 🙏 Acknowledgments
+
+Ominipg is built on top of amazing open-source projects:
+
+- [PGlite](https://github.com/electric-sql/pglite) - PostgreSQL in WebAssembly
+- [node-postgres](https://node-postgres.com/) - PostgreSQL client for Node.js
+- [Drizzle ORM](https://orm.drizzle.team/) - TypeScript ORM
+
+---
+
+<div align="center">
+
+**[Documentation](./docs/API.md)** • **[Examples](./examples)** • **[GitHub](https://github.com/AxionCompany/ominipg)** • **[Issues](https://github.com/AxionCompany/ominipg/issues)**
+
+Made with ❤️ by the Ominipg team
+
+</div>
