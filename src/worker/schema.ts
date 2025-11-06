@@ -1,4 +1,10 @@
-import { mainDb, mainDbType, meta, syncPool } from "./db.ts";
+import {
+  activePgliteExtensions,
+  mainDb,
+  mainDbType,
+  meta,
+  syncPool,
+} from "./db.ts";
 import { ident } from "./utils.ts";
 import type { PgPoolClient } from "./db.ts";
 import { getRssMb } from "./utils.ts";
@@ -22,6 +28,65 @@ async function ensureTrigger(tableName: string) {
       console.warn(`Failed to add outbox trigger to '${tableName}':`, message);
     }
   }
+}
+
+function getSkippableExtension(stmt: string): string | null {
+  if (mainDbType !== "pglite") return null;
+  const withoutComments = stmt.replace(/^\s*--.*$/gm, "").trimStart();
+  const match = withoutComments.match(
+    /^\s*CREATE\s+EXTENSION(?:\s+IF\s+NOT\s+EXISTS)?\s+"?([A-Za-z0-9_\-]+)"?/i,
+  );
+  if (!match) return null;
+  const extensionName = match[1].toLowerCase();
+  if (!activePgliteExtensions.has(extensionName)) {
+    return null;
+  }
+  return extensionName;
+}
+
+async function tryHandleDuplicateObjectDoBlock(stmt: string): Promise<boolean> {
+  if (mainDbType !== "pglite") return false;
+  const doMatch = stmt.match(
+    /^\s*DO\s+\$\$([\s\S]*?)\$\$\s*(LANGUAGE\s+\w+\s*)?;?\s*$/i,
+  );
+  if (!doMatch) return false;
+  const body = doMatch[1];
+  if (!/EXCEPTION\s+WHEN\s+duplicate_object/i.test(body)) {
+    return false;
+  }
+
+  const lowerBody = body.toLowerCase();
+  const beginIndex = lowerBody.indexOf("begin");
+  if (beginIndex === -1) return false;
+  const exceptionIndex = lowerBody.indexOf("exception", beginIndex);
+  if (exceptionIndex === -1) return false;
+  const statementsSection = body.slice(beginIndex + "begin".length, exceptionIndex).trim();
+  if (!statementsSection) return false;
+
+  const statements = statementsSection
+    .split(";")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  if (statements.length === 0) return false;
+
+  for (const inner of statements) {
+    try {
+      await mainDb.exec(inner);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const lowerMsg = message.toLowerCase();
+      if (
+        lowerMsg.includes("duplicate") ||
+        lowerMsg.includes("already exists")
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -132,6 +197,17 @@ export async function bootstrapSchema(
 ) {
   
   for (const stmt of ddl) {
+    const skippableExtension = getSkippableExtension(stmt);
+    if (skippableExtension) {
+      console.log(
+        `Skipping redundant extension statement for PGlite: ${skippableExtension}`,
+      );
+      continue;
+    }
+    if (await tryHandleDuplicateObjectDoBlock(stmt)) {
+      console.log("Handled DO $$ ... duplicate_object block in TypeScript for PGlite");
+      continue;
+    }
     try {
       await mainDb.exec(stmt);
     } catch (err) {

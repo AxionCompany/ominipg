@@ -19,6 +19,7 @@ export interface DatabaseClient {
 
 export let mainDb: DatabaseClient;
 export let mainDbType: "pglite" | "postgres";
+export const activePgliteExtensions = new Set<string>();
 
 // Minimal pg types to avoid importing npm modules at top-level
 export interface PgPoolClient {
@@ -183,6 +184,13 @@ function mergePGliteConfig(
   return config;
 }
 
+function recordActiveExtensions(extensionSqlNames: string[]) {
+  activePgliteExtensions.clear();
+  for (const name of extensionSqlNames) {
+    activePgliteExtensions.add(name.toLowerCase());
+  }
+}
+
 async function initializePGlite(
   url: string,
   extensionNames: string[] = [],
@@ -194,6 +202,7 @@ async function initializePGlite(
     ? await loadExtensions(extensionNames, logMetrics)
     : {};
   const mergedConfig = mergePGliteConfig(pgliteConfig, extensions);
+  const loadedExtensionNames = Object.keys(extensions);
 
   if (url === ":memory:" || url === "") {
     const before = getRssMb();
@@ -202,8 +211,9 @@ async function initializePGlite(
         ? new PGlite(mergedConfig)
         : new PGlite()) as unknown as PGliteLike,
     );
-    if (extensionNames.length > 0) {
-      await createExtensions(adapter, extensionNames);
+    let activatedSqlNames: string[] = [];
+    if (loadedExtensionNames.length > 0) {
+      activatedSqlNames = await createExtensions(adapter, loadedExtensionNames);
       if (logMetrics) {
         const after = getRssMb();
         if (after != null && before != null) {
@@ -215,6 +225,7 @@ async function initializePGlite(
         }
       }
     }
+    recordActiveExtensions(activatedSqlNames);
     return adapter;
   }
 
@@ -233,8 +244,9 @@ async function initializePGlite(
       ? new PGlite(dbPath, mergedConfig)
       : new PGlite(dbPath);
     const adapter = new PGliteAdapter(pglite as unknown as PGliteLike);
-    if (extensionNames.length > 0) {
-      await createExtensions(adapter, extensionNames);
+    let activatedSqlNames: string[] = [];
+    if (loadedExtensionNames.length > 0) {
+      activatedSqlNames = await createExtensions(adapter, loadedExtensionNames);
       if (logMetrics) {
         const after = getRssMb();
         if (after != null && before != null) {
@@ -246,6 +258,7 @@ async function initializePGlite(
         }
       }
     }
+    recordActiveExtensions(activatedSqlNames);
     return adapter;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -258,8 +271,9 @@ async function initializePGlite(
         ? new PGlite(fallbackConfig)
         : new PGlite()) as unknown as PGliteLike,
     );
-    if (extensionNames.length > 0) {
-      await createExtensions(adapter, extensionNames);
+    let activatedSqlNames: string[] = [];
+    if (loadedExtensionNames.length > 0) {
+      activatedSqlNames = await createExtensions(adapter, loadedExtensionNames);
       if (logMetrics) {
         const after = getRssMb();
         if (after != null && before != null) {
@@ -271,6 +285,7 @@ async function initializePGlite(
         }
       }
     }
+    recordActiveExtensions(activatedSqlNames);
     return adapter;
   }
 }
@@ -281,7 +296,7 @@ async function initializePGlite(
 async function createExtensions(
   adapter: DatabaseClient,
   extensionNames: string[],
-): Promise<void> {
+): Promise<string[]> {
   // Map extension names to their PostgreSQL extension names
   const extensionSqlNames: Record<string, string> = {
     "uuid_ossp": "uuid-ossp",
@@ -308,10 +323,13 @@ async function createExtensions(
     "tsm_system_time": "tsm_system_time",
   };
 
+  const activated: string[] = [];
+
   for (const extensionName of extensionNames) {
     try {
       const sqlName = extensionSqlNames[extensionName] || extensionName;
       await adapter.exec(`CREATE EXTENSION IF NOT EXISTS "${sqlName}"`);
+      activated.push(sqlName);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(
@@ -319,6 +337,8 @@ async function createExtensions(
       );
     }
   }
+
+  return activated;
 }
 
 /*───────────────── PostgreSQL Adapter ──────────────────*/
@@ -369,14 +389,17 @@ async function initializePostgreSQL(url: string): Promise<DatabaseClient> {
  */
 export async function initConnections(cfg: InitMsg) {
   mainDbType = detectDatabaseType(cfg.url);
-  mainDb = mainDbType === "pglite"
-    ? await initializePGlite(
+  if (mainDbType === "pglite") {
+    mainDb = await initializePGlite(
       cfg.url,
       cfg.pgliteExtensions ?? [],
       cfg.logMetrics,
       cfg.pgliteConfig,
-    )
-    : await initializePostgreSQL(cfg.url);
+    );
+  } else {
+    activePgliteExtensions.clear();
+    mainDb = await initializePostgreSQL(cfg.url);
+  }
 
   if (cfg.syncUrl) {
     if (detectDatabaseType(cfg.syncUrl) !== "postgres") {

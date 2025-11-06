@@ -558,39 +558,6 @@ BEGIN
   VALUES ('users', 'INSERT', json_object(NEW.*));
 END;
 ```
-
----
-
-## Performance Characteristics
-
-### Latency Comparison
-
-| Operation | Worker Mode | Direct Mode |
-|-----------|-------------|-------------|
-| Simple query | ~1-2ms overhead | Direct (fastest) |
-| Complex query | Minimal overhead | Direct |
-| CRUD operation | ~1-2ms overhead | Direct |
-| Sync | N/A | N/A (not available) |
-
-**Overhead Sources (Worker Mode):**
-- Message serialization: ~0.1-0.5ms
-- Context switching: ~0.5-1ms
-- Result deserialization: ~0.1-0.5ms
-
-### Memory Usage
-
-| Mode | Client | Worker | Total |
-|------|--------|--------|-------|
-| Worker (PGlite) | ~5MB | ~30-50MB | ~35-55MB |
-| Worker (PostgreSQL) | ~5MB | ~10-15MB | ~15-20MB |
-| Direct (PostgreSQL) | ~5-10MB | - | ~5-10MB |
-
-### Throughput
-
-- **Worker Mode**: ~5,000-10,000 queries/sec
-- **Direct Mode**: ~10,000-20,000 queries/sec
-- **Sync**: ~1,000-2,000 records/sec
-
 ---
 
 ## Design Decisions
@@ -654,4 +621,5 @@ END;
 - [API Reference](./API.md)
 - [Sync Guide](./SYNC.md)
 - [Source Code](../src)
+
 

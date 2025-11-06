@@ -32,3 +32,22 @@
 - Define and document runtime limitations (e.g. browser storage constraints,
   minimum Node/Bun versions) and add cross-runtime test plans (Node/Bun test
   runners, browser smoke tests).
+
+### Pluggable Storage & Sync Providers
+
+- **Goal**: Decouple Ominipg from PostgreSQL-only assumptions so local persistence can run on alternative engines (e.g. SQLite) while still syncing with remote Postgres.
+- **Status**: Proposed
+
+#### Proposed Implementation
+
+- Introduce a dialect/provider abstraction for the query layer (identifier quoting, parameter placeholders, DDL differences, JSON handling) with PostgreSQL as the default implementation.
+- Build a parallel provider targeting SQLite (or other embedded engines), adapting CRUD helpers, schema bootstrap, and migrations to the chosen dialect.
+- Redesign change capture/outbox logic behind an engine-agnostic interface so we can plug in provider-specific triggers or hooks without relying on PL/pgSQL features.
+- Separate the sync orchestrator into transport (remote Postgres) vs. storage adapters, making polling/replay strategies pluggable.
+
+#### Key Subtasks Discussed
+
+- Wrap all SQL emission in a `SqlDialect` interface (`quoteIdentifier`, `placeholder(n)`, `buildUpsert`, `supportsReturning`, JSON helpers) and route CRUD/query builders through it.
+- Add a generic `StorageAdapter` interface that implements change capture (triggers, queues, notifications) and expresses capabilities such as transaction semantics, JSON support, default values.
+- Rewrite conflict resolution and LWW handling to operate on provider-neutral payloads (e.g. JSON text) instead of PostgreSQL-specific types.
+- Expand the test matrix to cover each storage provider end-to-end, including sync scenarios against a PostgreSQL remote.

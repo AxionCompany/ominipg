@@ -28,7 +28,7 @@ We are committed to providing a welcoming and inclusive environment. Please be r
 
 ### Prerequisites
 
-- **Deno** 1.40 or higher
+- **Deno** 2.x or higher
 - **Git**
 - **PostgreSQL** (optional, for testing remote features)
 
@@ -36,7 +36,7 @@ We are committed to providing a welcoming and inclusive environment. Please be r
 
 ```bash
 # Fork the repository on GitHub first, then:
-git clone https://github.com/YOUR_USERNAME/ominipg.git
+git clone https://github.com/copilotzhq/ominipg.git
 cd ominipg
 ```
 
@@ -467,4 +467,5 @@ By contributing to Ominipg, you agree that your contributions will be licensed u
 ---
 
 Thank you for contributing to Ominipg! 🎉
+
 
