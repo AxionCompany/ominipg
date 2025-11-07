@@ -591,8 +591,8 @@ export function buildMetadataMap(
       }
     }
     const configDefaults = (config as unknown as {
-      default?: Record<string, unknown | (() => unknown)>;
-    }).default;
+      defaults?: Record<string, unknown | (() => unknown)>;
+    }).defaults;
     let staticDefaults: Record<string, unknown> | undefined;
     let dynamicDefaults: Record<string, () => unknown> | undefined;
     if (configDefaults) {

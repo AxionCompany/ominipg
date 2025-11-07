@@ -183,7 +183,7 @@ const schemas = defineSchema({
     },
     keys: [{ property: "id" }],
     timestamps: true, // Auto-manage created_at/updated_at
-    default: {
+    defaults: {
       status: "active",
       id: () => crypto.randomUUID()
     }

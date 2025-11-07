@@ -46,7 +46,7 @@ export type SchemaConfigInput<
    * Default values to apply on insert when a field is not provided.
    * Values may be static or factory functions invoked at runtime.
    */
-  default?: Readonly<Record<string, unknown | (() => unknown)>>;
+  defaults?: Readonly<Record<string, unknown | (() => unknown)>>;
 };
 
 type NormalizeKeys<K> = K extends readonly TableKeyDefinition[] ? K
@@ -151,8 +151,8 @@ export function defineSchema<
       timestamps: normalizeTimestamps(config.timestamps) as NormalizeTimestamps<
         S[typeof tableName]["timestamps"]
       >,
-      default: config.default
-        ? deepFreeze({ ...config.default }) as Readonly<Record<string, unknown | (() => unknown)>>
+      defaults: config.defaults
+        ? deepFreeze({ ...config.defaults }) as Readonly<Record<string, unknown | (() => unknown)>>
         : undefined,
     }) as FrozenConfig<S[typeof tableName]>;
     result[tableName as string] = frozenConfig;

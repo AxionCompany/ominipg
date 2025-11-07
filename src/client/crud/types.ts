@@ -39,7 +39,7 @@ export type TableSchemaConfig<
    * Values may be static or factory functions that produce the value at runtime.
    * Only applied if the field is undefined in the provided data.
    */
-  readonly default?: Readonly<Record<string, unknown | (() => unknown)>>;
+  readonly defaults?: Readonly<Record<string, unknown | (() => unknown)>>;
 };
 
 export type AnyTableSchemaConfig = TableSchemaConfig<
@@ -267,7 +267,7 @@ type TimestampColumnsForTable<
 type DefaultKeysForTable<
   Schemas extends CrudSchemas,
   TableName extends keyof Schemas,
-> = Schemas[TableName] extends { default?: infer Defaults }
+> = Schemas[TableName] extends { defaults?: infer Defaults }
   ? Defaults extends Record<string, unknown | (() => unknown)>
     ? keyof Defaults & string
   : never

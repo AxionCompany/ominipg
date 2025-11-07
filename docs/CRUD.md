@@ -145,7 +145,7 @@ interface TableSchemaConfig {
   };
 
   // Optional defaults for missing insert fields (static values or factories)
-  default?: Record<string, unknown | (() => unknown)>;
+  defaults?: Record<string, unknown | (() => unknown)>;
 }
 ```
 
@@ -844,7 +844,7 @@ const schemas = defineSchema({
     },
     keys: [{ property: "id" }],
     timestamps: true,
-    default: {
+    defaults: {
       id: () => crypto.randomUUID(),
       status: "active"
     }
