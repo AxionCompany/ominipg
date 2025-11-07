@@ -264,6 +264,21 @@ function jsonSchemaToZod(schema: JsonSchema, root: RootSchema): z.ZodTypeAny {
     return jsonSchemaToZod(resolved, root);
   }
 
+  const unionMembers = (schema as { anyOf?: JsonSchema[] }).anyOf
+    ?? (schema as { oneOf?: JsonSchema[] }).oneOf;
+  if (Array.isArray(unionMembers) && unionMembers.length > 0) {
+    const zods = unionMembers.map((member) => jsonSchemaToZod(member, root));
+    const nonNullMembers = zods.filter((member) => !(member instanceof z.ZodNull));
+    const hasNull = nonNullMembers.length !== zods.length;
+    if (nonNullMembers.length === 0) {
+      return z.null();
+    }
+    const union = nonNullMembers.length === 1
+      ? nonNullMembers[0]
+      : z.union(nonNullMembers as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
+    return hasNull ? union.nullable() : union;
+  }
+
   const type = (schema as { type?: string | string[] }).type;
 
   if (Array.isArray(type)) {
@@ -296,14 +311,21 @@ function jsonSchemaToZod(schema: JsonSchema, root: RootSchema): z.ZodTypeAny {
         }
         return z.enum(enumValues as [string, string, ...string[]]);
       }
-      let zz = z.string();
+      let base = z.string();
       if ("minLength" in schema && typeof schema.minLength === "number") {
-        zz = zz.min(schema.minLength);
+        base = base.min(schema.minLength);
       }
       if ("maxLength" in schema && typeof schema.maxLength === "number") {
-        zz = zz.max(schema.maxLength);
+        base = base.max(schema.maxLength);
       }
-      return zz;
+      const format = (schema as { format?: string }).format;
+      if (format === "date-time" || format === "date") {
+        const dateInstance = z.instanceof(Date).transform((value) =>
+          value.toISOString()
+        );
+        return z.union([base, dateInstance]);
+      }
+      return base;
     }
     case "number":
     case "integer": {
@@ -353,8 +375,9 @@ function jsonSchemaToZod(schema: JsonSchema, root: RootSchema): z.ZodTypeAny {
         if (additional && typeof additional === "object") {
           return base.catchall(jsonSchemaToZod(additional, root));
         }
+        return base.passthrough();
       }
-      return base;
+      return base.passthrough();
     }
   }
 }
@@ -572,7 +595,12 @@ export function buildMetadataMap(
     if (!info) continue;
 
     const relationViews = viewMaps.get(tableName) ?? new Map();
-    const properties = collectWritableProperties(config.schema);
+    const allProperties = collectProperties(config.schema);
+    const writableProperties = collectWritableProperties(config.schema);
+    const writableColumns = new Set(Object.keys(writableProperties));
+    for (const keyField of info.order) {
+      writableColumns.add(keyField);
+    }
     const foreignKeys = collectForeignKeys(
       tableName,
       config.schema,
@@ -581,13 +609,13 @@ export function buildMetadataMap(
     );
     const timestampConfig = config.timestamps;
     if (timestampConfig) {
-      const tableProps = collectProperties(config.schema);
       for (const column of [timestampConfig.createdAt, timestampConfig.updatedAt]) {
-        if (!tableProps[column]) {
+        if (!allProperties[column]) {
           throw new Error(
             `Timestamp column '${column}' is not present in table '${tableName}'.`,
           );
         }
+        writableColumns.add(column);
       }
     }
     const configDefaults = (config as unknown as {
@@ -617,7 +645,8 @@ export function buildMetadataMap(
       keySchema: info.schema,
       keyFields: [...info.fields],
       keyOrder: [...info.order],
-      properties,
+      properties: allProperties,
+      writableColumns,
       foreignKeys,
       relations: [],
       readOnlyProperties: new Set(relationViews.keys()),

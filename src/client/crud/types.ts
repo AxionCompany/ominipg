@@ -352,6 +352,7 @@ export interface TableMetadata {
   keyFields: string[];
   keyOrder: string[];
   properties: Record<string, JsonSchema>;
+  writableColumns: ReadonlySet<string>;
   foreignKeys: ForeignKey[];
   relations: RelationConfig[];
   readOnlyProperties: Set<string>;

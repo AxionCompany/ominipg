@@ -109,7 +109,7 @@ function buildInsertStatement(
   if (rows.length === 0) {
     throw new Error("Cannot insert zero rows.");
   }
-  const writableColumns = new Set(Object.keys(metadata.properties));
+  const writableColumns = metadata.writableColumns;
   const columns: string[] = [];
   for (const row of rows) {
     for (const key of Object.keys(row)) {
@@ -148,7 +148,7 @@ function buildUpsertStatementWithInsertDefaults(
   data: AnyRecord,
   defaultOnlyFields: Set<string>,
 ): { sql: string; params: unknown[] } {
-  const writableColumns = new Set(Object.keys(metadata.properties));
+  const writableColumns = metadata.writableColumns;
   const keyValues = extractKeyValues(filter, metadata);
   const sanitizedDataEntries = Object.entries(data).filter(([key]) => {
     if (!writableColumns.has(key)) {
@@ -231,7 +231,7 @@ function _buildUpsertStatement(
   filter: CrudFilter | undefined,
   data: AnyRecord,
 ): { sql: string; params: unknown[] } {
-  const writableColumns = new Set(Object.keys(metadata.properties));
+  const writableColumns = metadata.writableColumns;
   const keyValues = extractKeyValues(filter, metadata);
   const sanitizedDataEntries = Object.entries(data).filter(([key]) => {
     if (!writableColumns.has(key)) {
@@ -641,7 +641,7 @@ function buildTableApi<
   type PopulateKey = CrudTablePopulateKey<Schemas, TableName>;
   type ResultRow = Simplify<Row & Partial<Relations>>;
 
-  const writableColumnSet = new Set(Object.keys(metadata.properties));
+  const writableColumnSet = metadata.writableColumns;
   const timestampConfig = metadata.timestamps;
 
   function applyInsertDefaults<RecordType extends AnyRecord>(

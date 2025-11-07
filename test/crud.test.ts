@@ -133,6 +133,7 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
   });
 
   const { crud } = db;
+
   assertExists(crud, "crud API should be available when schemas are provided");
 
   const userId = uuid();
@@ -233,6 +234,7 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
   const post = await crud.posts.findOne({ id: postId }, {
     populate: ["author", "tags"],
   });
+
 
   assertExists(post);
   assertExists(post.author);
