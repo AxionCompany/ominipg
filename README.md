@@ -176,12 +176,17 @@ const schemas = defineSchema({
         id: { type: "string" },
         name: { type: "string" },
         email: { type: "string" },
-        age: { type: "number" }
+        age: { type: "number" },
+        status: { type: "string" }
       },
       required: ["id", "name", "email"]
     },
     keys: [{ property: "id" }],
-    timestamps: true // Auto-manage created_at/updated_at
+    timestamps: true, // Auto-manage created_at/updated_at
+    default: {
+      status: "active",
+      id: () => crypto.randomUUID()
+    }
   }
 });
 
@@ -201,6 +206,9 @@ const user = await db.crud.users.create({
   email: "alice@example.com",
   age: 25
 });
+
+- `default` fills in any missing insert fields. Static values and factory functions are allowed; the factory runs once per row. Defaulted fields participate in the INSERT clause but are skipped from the UPDATE clause of an upsert, so existing records are not overwritten.
+- Properties marked with JSON Schema `format: "date-time"` or `format: "date"` surface as `Date` in the inferred types (while still accepting strings at runtime), letting you opt into richer typing without extra boilerplate.
 
 // Powerful filters
 const adults = await db.crud.users.find({

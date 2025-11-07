@@ -180,9 +180,9 @@ function parsePropertyRef(
 }
 
 function collectForeignKeys(
-  tableName: string,
+  _tableName: string,
   schema: JsonSchema,
-  root: RootSchema,
+  _root: RootSchema,
   keyInfo: Map<string, KeyInfo>,
 ): ForeignKey[] {
   const props = collectProperties(schema);
@@ -590,6 +590,22 @@ export function buildMetadataMap(
         }
       }
     }
+    const configDefaults = (config as unknown as {
+      default?: Record<string, unknown | (() => unknown)>;
+    }).default;
+    let staticDefaults: Record<string, unknown> | undefined;
+    let dynamicDefaults: Record<string, () => unknown> | undefined;
+    if (configDefaults) {
+      for (const [key, value] of Object.entries(configDefaults)) {
+        if (typeof value === "function") {
+          if (!dynamicDefaults) dynamicDefaults = {};
+          dynamicDefaults[key] = value as () => unknown;
+        } else {
+          if (!staticDefaults) staticDefaults = {};
+          staticDefaults[key] = value;
+        }
+      }
+    }
     const zodSchema = jsonSchemaToZod(config.schema, root);
     const zodPartial = zodSchema instanceof z.ZodObject
       ? zodSchema.partial()
@@ -608,6 +624,8 @@ export function buildMetadataMap(
       timestamps: timestampConfig,
       zod: zodSchema,
       zodPartial,
+      staticDefaults,
+      dynamicDefaults,
     };
 
     map.set(tableName, metadata);

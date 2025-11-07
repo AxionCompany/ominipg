@@ -143,8 +143,14 @@ interface TableSchemaConfig {
     createdAt?: string;  // Column name (default: "created_at")
     updatedAt?: string;  // Column name (default: "updated_at")
   };
+
+  // Optional defaults for missing insert fields (static values or factories)
+  default?: Record<string, unknown | (() => unknown)>;
 }
 ```
+
+- JSON Schema `format` hints are respected: `format: "date-time"` or `format: "date"` on a string property will surface as a `Date` in the generated TypeScript types (while the runtime continues to accept ISO strings).
+- Schema-level `default` values (inside `properties`) also make the corresponding insert property optional, matching database-supplied defaults.
 
 ### With Timestamps
 
@@ -820,6 +826,34 @@ const schemas = defineSchema({
   }
 });
 ```
+
+### Defaults
+
+```typescript
+const schemas = defineSchema({
+  users: {
+    schema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        email: { type: "string" },
+        status: { type: "string" },
+        created_at: { type: "string" }
+      },
+      required: ["email"]
+    },
+    keys: [{ property: "id" }],
+    timestamps: true,
+    default: {
+      id: () => crypto.randomUUID(),
+      status: "active"
+    }
+  }
+});
+```
+
+- Defaults run per row for `create`, `createMany`, and the INSERT half of `upsert`. Provide explicit values to override them.
+- Dynamic factories execute locally; continue to prefer database-level defaults if you need decisions enforced server-side.
 
 ### Custom Column Names
 

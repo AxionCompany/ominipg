@@ -51,3 +51,21 @@
 - Add a generic `StorageAdapter` interface that implements change capture (triggers, queues, notifications) and expresses capabilities such as transaction semantics, JSON support, default values.
 - Rewrite conflict resolution and LWW handling to operate on provider-neutral payloads (e.g. JSON text) instead of PostgreSQL-specific types.
 - Expand the test matrix to cover each storage provider end-to-end, including sync scenarios against a PostgreSQL remote.
+
+### Column Alias Support via JSON Schema Titles
+
+- **Goal**: Let developers declare database columns in snake_case while exposing camelCase (or other) aliases in TypeScript by honoring the JSON Schema `title` metadata on properties.
+- **Status**: Proposed
+
+#### Proposed Implementation
+
+- Extend table metadata with alias maps so we know how to translate between physical column names and alias-facing property names.
+- Rework JSON Schema → Zod conversion and type inference so inferred types use the alias while validation still maps back to real columns.
+- Introduce a translation layer within CRUD create/update/upsert/filter/order/populate flows that converts alias keys to columns on the way into SQL and back again on the way out.
+
+#### Key Subtasks Discussed
+
+- Update filter compilation, sort/select parsing, and populate helpers to accept alias names but emit column-safe SQL.
+- Translate query results and populated relations from column keys to aliases before returning them to callers.
+- Ensure defaults, timestamps, and relation metadata operate correctly when alias and column names differ.
+- Document the feature and add regression tests that insert, update, filter, and populate using alias-based payloads.

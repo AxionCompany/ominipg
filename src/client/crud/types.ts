@@ -34,6 +34,12 @@ export type TableSchemaConfig<
   readonly schema: Schema;
   readonly keys: Keys;
   readonly timestamps?: Timestamps;
+  /**
+   * Default values to apply when inserting rows (create/upsert insert path).
+   * Values may be static or factory functions that produce the value at runtime.
+   * Only applied if the field is undefined in the provided data.
+   */
+  readonly default?: Readonly<Record<string, unknown | (() => unknown)>>;
 };
 
 export type AnyTableSchemaConfig = TableSchemaConfig<
@@ -46,10 +52,27 @@ export type CrudSchemas = Record<string, AnyTableSchemaConfig>;
 
 export type InferRow<Schema extends JsonSchema> = FromSchema<Schema>;
 
+type Simplify<T> = { [K in keyof T]: T[K] } extends infer O ? {
+  [K in keyof O]: O[K];
+} : never;
+
 type PropertiesOf<Schema> = Schema extends { properties: infer Props }
   ? Props extends Record<string, JsonSchema> ? Props
   : Record<string, JsonSchema>
   : Record<string, JsonSchema>;
+
+type SchemaProperties<
+  Schemas extends CrudSchemas,
+  TableName extends keyof Schemas,
+> = PropertiesOf<Schemas[TableName]["schema"]>;
+
+type PropertyForTable<
+  Schemas extends CrudSchemas,
+  TableName extends keyof Schemas,
+  Key extends PropertyKey,
+> = Key extends keyof SchemaProperties<Schemas, TableName>
+  ? SchemaProperties<Schemas, TableName>[Key]
+  : never;
 
 type ReadOnlyProperty<Prop> = Prop extends { readOnly: true } ? true : false;
 
@@ -140,6 +163,9 @@ type RelationEntryForKey<
   ? { target: Target; mode: Mode }
   : never;
 
+type SchemaPropertyHasDefault<Prop> = Prop extends { default: unknown } ? true
+  : false;
+
 type SchemaDefinitionMap<Schemas extends CrudSchemas> = {
   [K in keyof Schemas]: Schemas[K]["schema"];
 };
@@ -191,7 +217,33 @@ type StripIndex<T> = {
 type CrudBaseRow<
   Schemas extends CrudSchemas,
   TableName extends keyof Schemas,
-> = StripIndex<FromSchema<AugmentedSchema<Schemas, TableName>>>;
+> = ApplyFormatOverrides<
+  Schemas,
+  TableName,
+  StripIndex<FromSchema<AugmentedSchema<Schemas, TableName>>>
+>;
+
+type ReplaceString<Value, Replacement> = [Value] extends [never] ? never
+  : [Value] extends [string] ? Replacement
+  : Value extends string ? Exclude<Value, string> | Replacement
+  : Value;
+
+type FormatAdjustedValue<Prop, Value> = Prop extends { format: infer F extends string }
+  ? F extends "date-time" | "date"
+    ? ReplaceString<Value, Date>
+    : Value
+  : Value;
+
+type ApplyFormatOverrides<
+  Schemas extends CrudSchemas,
+  TableName extends keyof Schemas,
+  Row,
+> = Simplify<{
+  [K in keyof Row]: FormatAdjustedValue<
+    PropertyForTable<Schemas, TableName, K & PropertyKey>,
+    Row[K]
+  >;
+}>;
 
 type RelationKeysForTable<
   Schemas extends CrudSchemas,
@@ -205,6 +257,49 @@ type RelationSubset<
   TableName extends keyof Schemas,
 > = Partial<CrudTableRelations<Schemas, TableName>>;
 
+type TimestampColumnsForTable<
+  Schemas extends CrudSchemas,
+  TableName extends keyof Schemas,
+> = Schemas[TableName]["timestamps"] extends TableTimestampColumns
+  ? Schemas[TableName]["timestamps"][keyof TableTimestampColumns]
+  : never;
+
+type DefaultKeysForTable<
+  Schemas extends CrudSchemas,
+  TableName extends keyof Schemas,
+> = Schemas[TableName] extends { default?: infer Defaults }
+  ? Defaults extends Record<string, unknown | (() => unknown)>
+    ? keyof Defaults & string
+  : never
+  : never;
+
+type SchemaDefaultKeysForTable<
+  Schemas extends CrudSchemas,
+  TableName extends keyof Schemas,
+> = {
+  [K in keyof SchemaProperties<Schemas, TableName> & string]: SchemaPropertyHasDefault<
+    SchemaProperties<Schemas, TableName>[K]
+  > extends true ? K : never
+}[keyof SchemaProperties<Schemas, TableName> & string];
+
+type OptionalInsertKeys<
+  Schemas extends CrudSchemas,
+  TableName extends keyof Schemas,
+  BaseRow extends Record<string, unknown>,
+> = Extract<
+  TimestampColumnsForTable<Schemas, TableName>
+    | DefaultKeysForTable<Schemas, TableName>
+    | SchemaDefaultKeysForTable<Schemas, TableName>,
+  keyof BaseRow
+>;
+
+type SetOptional<
+  T,
+  Keys extends keyof T,
+> = Simplify<
+  Omit<T, Keys> & Partial<Pick<T, Keys>>
+>;
+
 export type CrudRow<
   Schemas extends CrudSchemas,
   TableName extends keyof Schemas,
@@ -214,9 +309,13 @@ export type CrudRow<
 export type WritableRowForTable<
   Schemas extends CrudSchemas,
   TableName extends keyof Schemas,
-> = Omit<
-  CrudRow<Schemas, TableName>,
-  CrudTableRelationKeys<Schemas, TableName>
+> = SetOptional<
+  Omit<CrudRow<Schemas, TableName>, CrudTableRelationKeys<Schemas, TableName>>,
+  OptionalInsertKeys<
+    Schemas,
+    TableName,
+    Omit<CrudRow<Schemas, TableName>, CrudTableRelationKeys<Schemas, TableName>>
+  >
 >;
 
 type KeySelection<
@@ -259,6 +358,10 @@ export interface TableMetadata {
   timestamps?: TableTimestampColumns;
   zod?: ZodTypeAny;
   zodPartial?: ZodTypeAny;
+  /** Static defaults applied on insert if field is undefined. */
+  staticDefaults?: Readonly<Record<string, unknown>>;
+  /** Dynamic defaults applied on insert if field is undefined. */
+  dynamicDefaults?: Readonly<Record<string, () => unknown>>;
 }
 
 export type TableMetadataMap = Map<string, TableMetadata>;

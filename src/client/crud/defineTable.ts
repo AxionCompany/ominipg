@@ -1,5 +1,4 @@
 import type {
-  CrudSchemas,
   JsonSchema,
   TableKeyDefinition,
   TableTimestampColumns,
@@ -25,7 +24,9 @@ type Constify<T> = T extends Primitive ? T
   : T extends object ? { readonly [K in keyof T]: Constify<T[K]> }
   : T;
 
-type Simplify<T> = { [K in keyof T]: T[K] } & {};
+type Simplify<T> = { [K in keyof T]: T[K] } extends infer O ? {
+  [K in keyof O]: O[K];
+} : never;
 
 type KeysInput =
   | readonly TableKeyDefinition[]
@@ -41,6 +42,11 @@ export type SchemaConfigInput<
   schema: Schema;
   keys: Keys;
   timestamps?: Timestamps;
+  /**
+   * Default values to apply on insert when a field is not provided.
+   * Values may be static or factory functions invoked at runtime.
+   */
+  default?: Readonly<Record<string, unknown | (() => unknown)>>;
 };
 
 type NormalizeKeys<K> = K extends readonly TableKeyDefinition[] ? K
@@ -145,6 +151,9 @@ export function defineSchema<
       timestamps: normalizeTimestamps(config.timestamps) as NormalizeTimestamps<
         S[typeof tableName]["timestamps"]
       >,
+      default: config.default
+        ? deepFreeze({ ...config.default }) as Readonly<Record<string, unknown | (() => unknown)>>
+        : undefined,
     }) as FrozenConfig<S[typeof tableName]>;
     result[tableName as string] = frozenConfig;
   }

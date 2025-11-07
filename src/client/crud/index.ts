@@ -43,7 +43,9 @@ type AnyRecord = Record<string, unknown>;
 // Compile-time exactness wrapper: any keys not present on U become never
 type ExactKeys<T extends U, U> = T & { [K in Exclude<keyof T, keyof U>]: never };
 
-type Simplify<T> = { [K in keyof T]: T[K] } & {};
+type Simplify<T> = { [K in keyof T]: T[K] } extends infer O ? {
+  [K in keyof O]: O[K];
+} : never;
 
 function toColumnList(columns: string[]): string {
   return columns.map((col) => `"${col}"`).join(", ");
@@ -140,6 +142,68 @@ function buildInsertStatement(
   return { sql, params };
 }
 
+function buildUpsertStatementWithInsertDefaults(
+  metadata: TableMetadata,
+  filter: CrudFilter | undefined,
+  data: AnyRecord,
+  defaultOnlyFields: Set<string>,
+): { sql: string; params: unknown[] } {
+  const writableColumns = new Set(Object.keys(metadata.properties));
+  const keyValues = extractKeyValues(filter, metadata);
+  const sanitizedDataEntries = Object.entries(data).filter(([key]) => {
+    if (!writableColumns.has(key)) {
+      throw new Error(
+        `Property '${key}' is not writable for table '${metadata.tableName}'.`,
+      );
+    }
+    return true;
+  });
+  const sanitizedData = Object.fromEntries(sanitizedDataEntries);
+  const fullData: AnyRecord = { ...sanitizedData };
+  if (keyValues) {
+    metadata.keyOrder.forEach((field, index) => {
+      if (!(field in fullData)) {
+        fullData[field] = keyValues[index];
+      }
+    });
+  }
+
+  for (const field of metadata.keyOrder) {
+    if (!(field in fullData)) {
+      throw new Error(`Upsert requires primary key field '${field}'.`);
+    }
+  }
+
+  // INSERT columns include keys + all provided columns (sanitized) + any fields present only due to defaults
+  const providedCols = new Set(Object.keys(sanitizedData));
+  const insertColumns = Array.from(
+    new Set([
+      ...metadata.keyOrder,
+      ...Object.keys(sanitizedData),
+      ...Array.from(defaultOnlyFields),
+    ]),
+  );
+  const params: unknown[] = [];
+  const insertPlaceholders = insertColumns.map((column) => {
+    params.push(fullData[column]);
+    return `$${params.length}`;
+  });
+
+  // UPDATE assignments should not include columns that were set only via defaults
+  const updateAssignments = insertColumns
+    .filter((column) => !metadata.keyOrder.includes(column))
+    .filter((column) => providedCols.has(column))
+    .map((column) => `"${column}" = EXCLUDED."${column}"`);
+
+  const sql = `INSERT INTO "${metadata.tableName}" (${toColumnList(insertColumns)}) VALUES (${insertPlaceholders.join(", ")}) ON CONFLICT (${toColumnList(metadata.keyOrder)}) ${
+    updateAssignments.length > 0
+      ? `DO UPDATE SET ${updateAssignments.join(", ")}`
+      : "DO NOTHING"
+  } RETURNING *`;
+
+  return { sql, params };
+}
+
 function extractKeyValues(
   filter: CrudFilter | undefined,
   metadata: TableMetadata,
@@ -162,7 +226,7 @@ function extractKeyValues(
   return keyValues;
 }
 
-function buildUpsertStatement(
+function _buildUpsertStatement(
   metadata: TableMetadata,
   filter: CrudFilter | undefined,
   data: AnyRecord,
@@ -580,6 +644,32 @@ function buildTableApi<
   const writableColumnSet = new Set(Object.keys(metadata.properties));
   const timestampConfig = metadata.timestamps;
 
+  function applyInsertDefaults<RecordType extends AnyRecord>(
+    record: RecordType,
+  ): { value: RecordType; defaultOnlyFields: Set<string> } {
+    const clone = { ...record } as AnyRecord;
+    const defaultOnly = new Set<string>();
+    const staticDefaults = metadata.staticDefaults ?? {};
+    for (const [key, val] of Object.entries(staticDefaults)) {
+      if (clone[key] === undefined) {
+        clone[key] = val;
+        defaultOnly.add(key);
+      }
+    }
+    const dynamicDefaults = metadata.dynamicDefaults ?? {};
+    for (const [key, fn] of Object.entries(dynamicDefaults)) {
+      if (clone[key] === undefined) {
+        try {
+          clone[key] = fn();
+          defaultOnly.add(key);
+        } catch (_e) {
+          // Ignore default function errors, leave undefined
+        }
+      }
+    }
+    return { value: clone as RecordType, defaultOnlyFields: defaultOnly };
+  }
+
   function applyTimestamps<RecordType extends AnyRecord>(
     record: RecordType,
     mode: "create" | "update" | "upsert",
@@ -656,7 +746,8 @@ function buildTableApi<
   ): Promise<ResultRow> {
     ensureObject(data);
     const stamped = applyTimestamps({ ...data }, "create") as Writable;
-    const { sql, params } = buildInsertStatement(metadata, [stamped]);
+    const { value: withDefaults } = applyInsertDefaults(stamped as AnyRecord);
+    const { sql, params } = buildInsertStatement(metadata, [withDefaults]);
     const result = await execute(sql, params);
     const rows = applyValidation(
       result.rows as ResultRow[],
@@ -676,7 +767,9 @@ function buildTableApi<
     const prepared: Writable[] = [];
     for (const item of list) {
       ensureObject(item);
-      prepared.push(applyTimestamps({ ...item }, "create") as Writable);
+      const stamped = applyTimestamps({ ...item }, "create") as Writable;
+      const { value: withDefaults } = applyInsertDefaults(stamped as AnyRecord);
+      prepared.push(withDefaults as Writable);
     }
     const { sql, params } = buildInsertStatement(metadata, prepared);
     const result = await execute(sql, params);
@@ -695,8 +788,16 @@ function buildTableApi<
   ): Promise<ResultRow | null> {
     ensureObject(data);
     if (options?.upsert) {
-      const stamped = applyTimestamps({ ...data }, "upsert");
-      const { sql, params } = buildUpsertStatement(metadata, filter, stamped);
+      const stamped = applyTimestamps({ ...data }, "upsert") as AnyRecord;
+      const { value: withDefaults, defaultOnlyFields } = applyInsertDefaults(
+        stamped,
+      );
+      const { sql, params } = buildUpsertStatementWithInsertDefaults(
+        metadata,
+        filter,
+        withDefaults,
+        defaultOnlyFields,
+      );
       const result = await execute(sql, params);
       const rows = applyValidation(
         result.rows as ResultRow[],
