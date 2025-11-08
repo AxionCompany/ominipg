@@ -26,10 +26,13 @@ export interface TableKeyDefinition {
   readonly $ref?: JsonPointer;
 }
 
+export type DefaultMap = Readonly<Record<string, unknown | (() => unknown)>>;
+
 export type TableSchemaConfig<
   Schema extends JsonSchema,
   Keys extends readonly TableKeyDefinition[],
   Timestamps extends TableTimestampColumns | undefined = undefined,
+  Defaults extends DefaultMap | undefined = undefined,
 > = {
   readonly schema: Schema;
   readonly keys: Keys;
@@ -39,13 +42,14 @@ export type TableSchemaConfig<
    * Values may be static or factory functions that produce the value at runtime.
    * Only applied if the field is undefined in the provided data.
    */
-  readonly defaults?: Readonly<Record<string, unknown | (() => unknown)>>;
+  readonly defaults?: Defaults;
 };
 
 export type AnyTableSchemaConfig = TableSchemaConfig<
   JsonSchema,
   readonly TableKeyDefinition[],
-  TableTimestampColumns | undefined
+  TableTimestampColumns | undefined,
+  DefaultMap | undefined
 >;
 
 export type CrudSchemas = Record<string, AnyTableSchemaConfig>;

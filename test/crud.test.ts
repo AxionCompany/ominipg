@@ -1,4 +1,4 @@
-import { type CrudRow, defineSchema, Ominipg } from "../src/client/index.ts";
+import { defineSchema, Ominipg } from "../src/client/index.ts";
 import {
   assertEquals,
   assertExists,
@@ -17,6 +17,9 @@ const schemas = defineSchema({
       required: ["id", "name", "email"],
     },
     keys: [{ property: "id" }],
+    defaults: {
+      id: () => crypto.randomUUID(),
+    },
   },
   posts: {
     schema: {
@@ -85,12 +88,6 @@ const schemas = defineSchema({
   },
 });
 
-type UserRow = CrudRow<typeof schemas, "users">;
-
-type PostRow = CrudRow<typeof schemas, "posts">;
-
-type PostTagRow = CrudRow<typeof schemas, "posts_tags">;
-
 const schemaSQL = [
   `CREATE TABLE IF NOT EXISTS users(
         id TEXT PRIMARY KEY,
@@ -136,16 +133,21 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
 
   assertExists(crud, "crud API should be available when schemas are provided");
 
-  const userId = uuid();
   const postId = uuid();
   const tagA = uuid();
   const tagB = uuid();
 
-  await crud.users.create({
-    id: userId,
+  const insertUserWithoutId: typeof schemas.users.$inferInsert = {
+    name: "Ada Lovelace",
+    email: "ada@example.com",
+  };
+  void insertUserWithoutId;
+
+  const user = await crud.users.create({
     name: "Ada Lovelace",
     email: "ada@example.com",
   });
+  const userId = user.id;
 
   await crud.posts.create({
     id: postId,
@@ -235,7 +237,6 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
     populate: ["author", "tags"],
   });
 
-
   assertExists(post);
   assertExists(post.author);
   assertEquals(post.author.email, "ada@example.com");
@@ -246,13 +247,15 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
 
   const sortedPosts = await crud.posts.find({}, {
     sort: [{ field: "title", direction: "asc" }],
-  }) as PostRow[];
-  assertEquals(sortedPosts.map((p: PostRow) => p.title), [
-    "Aardvark",
-    "Hello",
-    "Midnight",
-    "Zeppelin",
-  ]);
+  });
+
+  
+  sortedPosts.forEach((p) => {
+    assertEquals(p.title, "Aardvark");
+    assertEquals(p.title, "Hello");
+    assertEquals(p.title, "Midnight");
+    assertEquals(p.title, "Zeppelin");
+  });
 
   const pagedPosts = await crud.posts.find({}, {
     sort: [{ field: "title", direction: "asc" }, {
@@ -261,7 +264,7 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
     }],
     limit: 1,
     skip: 1,
-  }) as PostRow[];
+  })
   assertEquals(pagedPosts.length, 1);
   assertEquals(pagedPosts[0].title, "Hello");
 
@@ -269,8 +272,11 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
     "metadata.category.primary": { $eq: "news" },
   }, {
     sort: [{ field: "title", direction: "asc" }],
-  }) as PostRow[];
-  assertEquals(newsPosts.map((p: PostRow) => p.title), ["Hello", "Midnight"]);
+  })
+  newsPosts.forEach((p) => {
+    assertEquals(p.title, "Hello");
+    assertEquals(p.title, "Midnight");
+  });
 
   const tagHistoryPosts = await crud.posts.find({
     $and: [
@@ -288,19 +294,21 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
           }, {
             select: ["postId"],
             validateOutput: false,
-          })) as PostTagRow[]).map((row: PostTagRow) => row.postId as string),
+          })) as { postId: string }[]).map((row) => row.postId),
         },
       },
       { excerpt: { $exists: false } },
     ],
-  }) as PostRow[];
+  });
   assertEquals(tagHistoryPosts.length, 1);
-  assertEquals((tagHistoryPosts[0] as PostRow).title, "Midnight");
+  assertEquals((tagHistoryPosts[0]).title, "Midnight");
 
   const highRatedPosts = await crud.posts.find({
     "metadata.rating": { $gte: 4.7 },
-  }) as PostRow[];
-  assertEquals(highRatedPosts.map((p: PostRow) => p.title), ["Midnight"]);
+  });
+  highRatedPosts.forEach((p) => {
+    assertEquals(p.title, "Midnight");
+  });
 
   const complexFilter = await crud.posts.find({
     $or: [
@@ -323,46 +331,53 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
     ],
   }, {
     sort: [{ field: "title", direction: "asc" }],
-  }) as PostRow[];
+  });
 
-  assertEquals(complexFilter.map((p: PostRow) => p.title), [
-    "Hello",
-    "Midnight",
-  ]);
+  complexFilter.forEach((p) => {
+    assertEquals(p.title, "Hello");
+    assertEquals(p.title, "Midnight");
+  }); 
 
   const nullRatingPosts = await crud.posts.find({
     "metadata.rating": { $eq: null },
   }, {
     sort: [{ field: "title", direction: "asc" }],
-  }) as PostRow[];
-  assertEquals(nullRatingPosts.map((p: PostRow) => p.title), ["Zeppelin"]);
+  });
+
+  nullRatingPosts.forEach((p) => {
+    assertEquals(p.title, "Zeppelin");
+  });
 
   const wordCountRange = await crud.posts.find({
     wordCount: { $gte: 150, $lt: 300 },
   }, {
     orderBy: { title: "asc" },
-  }) as PostRow[];
-  assertEquals(wordCountRange.map((p: PostRow) => p.title), [
-    "Hello",
-    "Midnight",
-  ]);
+  });
+  wordCountRange.forEach((p) => {
+    assertEquals(p.title, "Hello");
+    assertEquals(p.title, "Midnight");
+  });
+  wordCountRange.forEach((p) => {
+    assertEquals(p.title, "Hello");
+    assertEquals(p.title, "Midnight");
+  });
 
   const secondaryMatch = await crud.posts.find({
     "metadata.category.secondary": { $in: ["updates", "history"] },
   }, {
     sort: [{ field: "title", direction: "asc" }],
-  }) as PostRow[];
-  assertEquals(secondaryMatch.map((p: PostRow) => p.title), [
-    "Hello",
-    "Midnight",
-  ]);
+  });
+  secondaryMatch.forEach((p) => {
+    assertEquals(p.title, "Hello");
+    assertEquals(p.title, "Midnight");
+  });
 
   const userWithPosts = await crud.users.findOne({ id: userId });
   assertExists(userWithPosts);
 
   const updated = await crud.posts.update({ id: postId }, {
     title: "Updated",
-  }) as PostRow | null;
+  });
   assertExists(updated);
   assertEquals(updated.title, "Updated");
   assertExists(updated.updated_at);

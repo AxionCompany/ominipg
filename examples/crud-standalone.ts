@@ -7,7 +7,7 @@
  * Run this with: deno run --allow-all examples/crud-standalone.ts
  */
 
-import { Pool } from "npm:pg@8.16.3";
+import { Pool } from "pg";
 import { defineSchema, createCrudApi } from "../src/client/crud/index.ts";
 
 console.log("🔌 Standalone CRUD Module Demo\n");

@@ -34,10 +34,13 @@ type KeysInput =
 
 type TimestampsInput = boolean | TableTimestampConfig | undefined;
 
+type DefaultsInput = Readonly<Record<string, unknown | (() => unknown)>>;
+
 export type SchemaConfigInput<
   Schema,
   Keys extends KeysInput,
   Timestamps extends TimestampsInput = undefined,
+  Defaults extends DefaultsInput | undefined = undefined,
 > = {
   schema: Schema;
   keys: Keys;
@@ -46,7 +49,7 @@ export type SchemaConfigInput<
    * Default values to apply on insert when a field is not provided.
    * Values may be static or factory functions invoked at runtime.
    */
-  defaults?: Readonly<Record<string, unknown | (() => unknown)>>;
+  defaults?: Defaults;
 };
 
 type NormalizeKeys<K> = K extends readonly TableKeyDefinition[] ? K
@@ -61,25 +64,27 @@ type NormalizeTimestamps<T> = T extends boolean | TableTimestampConfig
 type FrozenConfig<C> = C extends SchemaConfigInput<
   infer Schema,
   infer Keys extends KeysInput,
-  infer Timestamps extends TimestampsInput
+  infer Timestamps extends TimestampsInput,
+  infer Defaults extends DefaultsInput | undefined
 > ? Schema extends JsonSchema
   ? NormalizeKeys<Keys> extends never ? never
   : TableSchemaConfig<
     Constify<Schema>,
     NormalizeKeys<Keys>,
-    NormalizeTimestamps<Timestamps>
+    NormalizeTimestamps<Timestamps>,
+    Constify<Defaults>
   >
   : never
   : never;
 
-type FrozenConfigMap<S extends Record<string, SchemaConfigInput<JsonSchema, KeysInput, TimestampsInput>>> = {
+type FrozenConfigMap<S extends Record<string, SchemaConfigInput<JsonSchema, KeysInput, TimestampsInput, DefaultsInput | undefined>>> = {
   readonly [K in keyof S]: FrozenConfig<S[K]>;
 };
 
 type FrozenSchemas<
   S extends Record<
     string,
-    SchemaConfigInput<JsonSchema, KeysInput, TimestampsInput>
+    SchemaConfigInput<JsonSchema, KeysInput, TimestampsInput, DefaultsInput | undefined>
   >,
 > = {
   readonly [K in keyof S]: FrozenConfig<S[K]> & {
@@ -136,12 +141,23 @@ function normalizeTimestamps(
 export function defineSchema<
   const S extends Record<
     string,
-    SchemaConfigInput<JsonSchema, KeysInput, TimestampsInput>
+    SchemaConfigInput<
+      JsonSchema,
+      KeysInput,
+      TimestampsInput,
+      DefaultsInput | undefined
+    >
   >,
 >(schemas: S): FrozenSchemas<S> {
   const result = {} as Record<string, unknown>;
   for (const tableName of Object.keys(schemas) as Array<keyof S>) {
     const config = schemas[tableName];
+    const defaultsValue = config.defaults;
+    const normalizedDefaults = defaultsValue === undefined
+      ? undefined
+      : deepFreeze(Object.assign({}, defaultsValue)) as Constify<
+        typeof defaultsValue
+      >;
     const frozenConfig = deepFreeze({
       schema: deepFreeze(structuredClone(config.schema)) as
         Constify<S[typeof tableName]["schema"]>,
@@ -151,9 +167,7 @@ export function defineSchema<
       timestamps: normalizeTimestamps(config.timestamps) as NormalizeTimestamps<
         S[typeof tableName]["timestamps"]
       >,
-      defaults: config.defaults
-        ? deepFreeze({ ...config.defaults }) as Readonly<Record<string, unknown | (() => unknown)>>
-        : undefined,
+      defaults: normalizedDefaults,
     }) as FrozenConfig<S[typeof tableName]>;
     result[tableName as string] = frozenConfig;
   }

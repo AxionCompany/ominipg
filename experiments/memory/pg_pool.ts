@@ -4,7 +4,7 @@ console.log("node-postgres Pool memory\n==========================");
 
 await snapshotMemory("startup");
 
-const { Pool } = await import("npm:pg@8.16.3");
+const { Pool } = await import("pg");
 
 await snapshotMemory("after import");
 
