@@ -80,6 +80,15 @@ type PropertyForTable<
 
 type ReadOnlyProperty<Prop> = Prop extends { readOnly: true } ? true : false;
 
+type StripReadOnlyProperties<Schema> = Schema extends { properties: infer Props }
+  ? Omit<Schema, "properties"> & {
+    properties: {
+      [K in keyof Props as ReadOnlyProperty<Props[K]> extends true ? never : K]:
+        Props[K];
+    };
+  }
+  : Schema;
+
 type ExtractArrayRef<Prop> = Prop extends { items: infer Items }
   ? ExtractRef<Items>
   : never;
@@ -171,17 +180,47 @@ type SchemaPropertyHasDefault<Prop> = Prop extends { default: unknown } ? true
   : false;
 
 type SchemaDefinitionMap<Schemas extends CrudSchemas> = {
-  [K in keyof Schemas]: Schemas[K]["schema"];
+  [K in keyof Schemas]: StripReadOnlyProperties<Schemas[K]["schema"]>;
 };
 
 type KeyNames<Schemas extends CrudSchemas, TableName extends keyof Schemas> =
   Schemas[TableName]["keys"][number]["property"];
 
+// Compute the set of table names referenced via $ref (including array item refs)
+type ReferencedTablesForTable<
+  Schemas extends CrudSchemas,
+  TableName extends keyof Schemas,
+> = {
+  [K in keyof SchemaProperties<Schemas, TableName>]: (
+    ExtractRef<SchemaProperties<Schemas, TableName>[K]> extends infer Ref extends string
+      ? RefTarget<Ref>
+      : never
+  ) | (
+    IsArraySchema<SchemaProperties<Schemas, TableName>[K]> extends true
+      ? (
+        ExtractArrayRef<SchemaProperties<Schemas, TableName>[K]> extends infer ARef extends string
+          ? RefTarget<ARef>
+          : never
+      )
+      : never
+  );
+}[keyof SchemaProperties<Schemas, TableName>] & keyof Schemas;
+
+type LimitedDefs<
+  Schemas extends CrudSchemas,
+  TableName extends keyof Schemas,
+> = {
+  [K in ReferencedTablesForTable<Schemas, TableName>]: StripReadOnlyProperties<
+    Schemas[K]["schema"]
+  >;
+};
+
 type AugmentedSchema<
   Schemas extends CrudSchemas,
   TableName extends keyof Schemas,
 > = Schemas[TableName]["schema"] & {
-  $defs: SchemaDefinitionMap<Schemas>;
+  // Only include referenced table schemas to keep FromSchema expansion shallow
+  $defs: LimitedDefs<Schemas, TableName>;
 };
 
 export type CrudTableRelations<
@@ -193,11 +232,12 @@ export type CrudTableRelations<
     TableName,
     K
   > extends { target: infer Target extends keyof Schemas; mode: "array" }
-    ? ReadonlyArray<CrudRow<Schemas, Target>>
+    // Use base rows for arrays to avoid recursive expansion through relations
+    ? ReadonlyArray<CrudBaseRow<Schemas, Target>>
     : RelationEntryForKey<Schemas, TableName, K> extends {
       target: infer Target extends keyof Schemas;
       mode: "object";
-    } ? CrudRow<Schemas, Target> | null
+    } ? CrudBaseRow<Schemas, Target> | null
     : never;
 };
 
@@ -218,13 +258,17 @@ type StripIndex<T> = {
     : K]: T[K]
 };
 
-type CrudBaseRow<
+export type CrudBaseRow<
   Schemas extends CrudSchemas,
   TableName extends keyof Schemas,
 > = ApplyFormatOverrides<
   Schemas,
   TableName,
-  StripIndex<FromSchema<AugmentedSchema<Schemas, TableName>>>
+  StripIndex<
+    FromSchema<
+      StripReadOnlyProperties<AugmentedSchema<Schemas, TableName>>
+    >
+  >
 >;
 
 type ReplaceString<Value, Replacement> = [Value] extends [never] ? never
@@ -396,13 +440,25 @@ export type CrudTableApi<
   Writable,
   PopulateKey extends string = string,
 > = {
+  // No populate → return base rows only (lighter types, avoids deep instantiation)
   find(
     filter?: CrudFilter | null,
-    options?: CrudQueryOptions<PopulateKey>,
+    options?: Omit<CrudQueryOptions<PopulateKey>, "populate"> & { populate?: undefined },
+  ): Promise<Array<Row>>;
+  // With populate → return rows with relations
+  find(
+    filter: CrudFilter | null | undefined,
+    options: Omit<CrudQueryOptions<PopulateKey>, "populate"> & { populate: ReadonlyArray<PopulateKey> },
   ): Promise<Array<Row & Partial<Relations>>>;
+  // No populate → base row
   findOne(
     filter?: CrudFilter | null,
-    options?: CrudQueryOptions<PopulateKey>,
+    options?: Omit<CrudQueryOptions<PopulateKey>, "populate"> & { populate?: undefined },
+  ): Promise<Row | null>;
+  // With populate → row with relations
+  findOne(
+    filter: CrudFilter | null | undefined,
+    options: Omit<CrudQueryOptions<PopulateKey>, "populate"> & { populate: ReadonlyArray<PopulateKey> },
   ): Promise<(Row & Partial<Relations>) | null>;
   create(
     data: Writable,
@@ -431,7 +487,7 @@ export type CrudTableApi<
 
 export type CrudApi<Schemas extends CrudSchemas> = {
   [TableName in keyof Schemas]: CrudTableApi<
-    CrudRow<Schemas, TableName>,
+    CrudBaseRow<Schemas, TableName>,
     CrudTableRelations<Schemas, TableName>,
     WritableRowForTable<Schemas, TableName>,
     CrudTablePopulateKey<Schemas, TableName>

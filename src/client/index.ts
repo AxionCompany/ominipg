@@ -236,9 +236,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     }
     const db = new Ominipg("worker", worker);
 
+    const { schemas: _schemasForWorker, ...initOptions } = options;
     const initMsg = {
       type: "init" as const,
-      ...options,
+      ...initOptions,
       url,
     };
 

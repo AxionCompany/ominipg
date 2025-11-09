@@ -2,11 +2,11 @@ import type {
   CrudApi,
   CrudFilter,
   CrudQueryOptions,
-  CrudRow,
   CrudSchemas,
   CrudTableApi,
   CrudTablePopulateKey,
   CrudTableRelations,
+  CrudBaseRow,
   RelationConfig,
   TableMetadata,
   TableMetadataMap,
@@ -39,9 +39,6 @@ type ExecuteFn = (
 ) => Promise<{ rows: unknown[] }>;
 
 type AnyRecord = Record<string, unknown>;
-
-// Compile-time exactness wrapper: any keys not present on U become never
-type ExactKeys<T extends U, U> = T & { [K in Exclude<keyof T, keyof U>]: never };
 
 type Simplify<T> = { [K in keyof T]: T[K] } extends infer O ? {
   [K in keyof O]: O[K];
@@ -630,12 +627,12 @@ function buildTableApi<
   execute: ExecuteFn,
   tables: TableMetadataMap,
 ): CrudTableApi<
-  CrudRow<Schemas, TableName>,
+  CrudBaseRow<Schemas, TableName>,
   CrudTableRelations<Schemas, TableName>,
   WritableRowForTable<Schemas, TableName>,
   CrudTablePopulateKey<Schemas, TableName>
 > {
-  type Row = CrudRow<Schemas, TableName>;
+  type Row = CrudBaseRow<Schemas, TableName>;
   type Relations = CrudTableRelations<Schemas, TableName>;
   type Writable = WritableRowForTable<Schemas, TableName>;
   type PopulateKey = CrudTablePopulateKey<Schemas, TableName>;
@@ -740,8 +737,8 @@ function buildTableApi<
     return first ?? null;
   }
 
-  async function create<T extends Writable>(
-    data: ExactKeys<T, Writable>,
+  async function create(
+    data: Writable,
     options?: { validateOutput?: boolean },
   ): Promise<ResultRow> {
     ensureObject(data);
@@ -757,8 +754,8 @@ function buildTableApi<
     return rows[0];
   }
 
-  async function createMany<T extends Writable>(
-    list: Array<ExactKeys<T, Writable>>,
+  async function createMany(
+    list: Writable[],
     options?: { validateOutput?: boolean },
   ): Promise<ResultRow[]> {
     if (!Array.isArray(list) || list.length === 0) {
@@ -781,9 +778,9 @@ function buildTableApi<
     return rows;
   }
 
-  async function update<T extends Partial<Writable>>(
+  async function update(
     filter: CrudFilter | undefined,
-    data: ExactKeys<T, Partial<Writable>>,
+    data: Partial<Writable>,
     options?: { upsert?: boolean; validateOutput?: boolean },
   ): Promise<ResultRow | null> {
     ensureObject(data);
@@ -843,9 +840,9 @@ function buildTableApi<
     return first ?? null;
   }
 
-  async function updateMany<T extends Partial<Writable>>(
+  async function updateMany(
     filter: CrudFilter | undefined,
-    data: ExactKeys<T, Partial<Writable>>,
+    data: Partial<Writable>,
     options?: { upsert?: boolean; validateOutput?: boolean },
   ): Promise<{ rows: ResultRow[]; count: number }> {
     ensureObject(data);

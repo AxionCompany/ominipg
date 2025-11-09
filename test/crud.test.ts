@@ -248,14 +248,10 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
   const sortedPosts = await crud.posts.find({}, {
     sort: [{ field: "title", direction: "asc" }],
   });
-
-  
-  sortedPosts.forEach((p) => {
-    assertEquals(p.title, "Aardvark");
-    assertEquals(p.title, "Hello");
-    assertEquals(p.title, "Midnight");
-    assertEquals(p.title, "Zeppelin");
-  });
+  assertEquals(
+    sortedPosts.map((p) => p.title),
+    ["Aardvark", "Hello", "Midnight", "Zeppelin"],
+  );
 
   const pagedPosts = await crud.posts.find({}, {
     sort: [{ field: "title", direction: "asc" }, {
@@ -272,11 +268,11 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
     "metadata.category.primary": { $eq: "news" },
   }, {
     sort: [{ field: "title", direction: "asc" }],
-  })
-  newsPosts.forEach((p) => {
-    assertEquals(p.title, "Hello");
-    assertEquals(p.title, "Midnight");
   });
+  assertEquals(
+    newsPosts.map((p) => p.title),
+    ["Hello", "Midnight"],
+  );
 
   const tagHistoryPosts = await crud.posts.find({
     $and: [
@@ -333,10 +329,10 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
     sort: [{ field: "title", direction: "asc" }],
   });
 
-  complexFilter.forEach((p) => {
-    assertEquals(p.title, "Hello");
-    assertEquals(p.title, "Midnight");
-  }); 
+  assertEquals(
+    complexFilter.map((p) => p.title),
+    ["Hello", "Midnight"],
+  );
 
   const nullRatingPosts = await crud.posts.find({
     "metadata.rating": { $eq: null },
@@ -344,33 +340,30 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
     sort: [{ field: "title", direction: "asc" }],
   });
 
-  nullRatingPosts.forEach((p) => {
-    assertEquals(p.title, "Zeppelin");
-  });
+  assertEquals(
+    nullRatingPosts.map((p) => p.title),
+    ["Zeppelin"],
+  );
 
   const wordCountRange = await crud.posts.find({
     wordCount: { $gte: 150, $lt: 300 },
   }, {
     orderBy: { title: "asc" },
   });
-  wordCountRange.forEach((p) => {
-    assertEquals(p.title, "Hello");
-    assertEquals(p.title, "Midnight");
-  });
-  wordCountRange.forEach((p) => {
-    assertEquals(p.title, "Hello");
-    assertEquals(p.title, "Midnight");
-  });
+  assertEquals(
+    wordCountRange.map((p) => p.title),
+    ["Hello", "Midnight"],
+  );
 
   const secondaryMatch = await crud.posts.find({
     "metadata.category.secondary": { $in: ["updates", "history"] },
   }, {
     sort: [{ field: "title", direction: "asc" }],
   });
-  secondaryMatch.forEach((p) => {
-    assertEquals(p.title, "Hello");
-    assertEquals(p.title, "Midnight");
-  });
+  assertEquals(
+    secondaryMatch.map((p) => p.title),
+    ["Hello", "Midnight"],
+  );
 
   const userWithPosts = await crud.users.findOne({ id: userId });
   assertExists(userWithPosts);
