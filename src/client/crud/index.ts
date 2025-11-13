@@ -98,6 +98,44 @@ function ensureObject(value: unknown): asserts value is AnyRecord {
   }
 }
 
+function hasJsonLikeType(schema: unknown): boolean {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return false;
+  }
+  const obj = schema as Record<string, unknown>;
+  const type = obj.type as string | string[] | undefined;
+  if (Array.isArray(type)) {
+    if (type.includes("object") || type.includes("array")) return true;
+  } else if (type === "object" || type === "array") {
+    return true;
+  }
+  // Heuristics: presence of properties/items without explicit type
+  if ("properties" in obj) return true;
+  if ("items" in obj) return true;
+  // Check unions
+  const unions = (obj.anyOf as unknown[]) ?? (obj.oneOf as unknown[]) ?? (obj.allOf as unknown[]);
+  if (Array.isArray(unions)) {
+    return unions.some((member) => hasJsonLikeType(member));
+  }
+  return false;
+}
+
+function serializeForColumn(
+  metadata: TableMetadata,
+  column: string,
+  value: unknown,
+): unknown {
+  if (value === undefined) return null;
+  const propSchema = metadata.properties[column];
+  if (hasJsonLikeType(propSchema)) {
+    // Always send as JSON text so the server parses into json/jsonb,
+    // avoiding driver encoding as postgres arrays (e.g. {"a","b"}).
+    if (value === null) return null;
+    return JSON.stringify(value);
+  }
+  return value;
+}
+
 function buildInsertStatement(
   metadata: TableMetadata,
   rows: AnyRecord[],
@@ -127,7 +165,7 @@ function buildInsertStatement(
   const params: unknown[] = [];
   const valueRows = rows.map((row) => {
     const placeholders = columns.map((column) => {
-      params.push(row[column]);
+      params.push(serializeForColumn(metadata, column, row[column]));
       return `$${params.length}`;
     });
     return `(${placeholders.join(", ")})`;
@@ -182,7 +220,7 @@ function buildUpsertStatementWithInsertDefaults(
   );
   const params: unknown[] = [];
   const insertPlaceholders = insertColumns.map((column) => {
-    params.push(fullData[column]);
+    params.push(serializeForColumn(metadata, column, fullData[column]));
     return `$${params.length}`;
   });
 
@@ -259,7 +297,7 @@ function _buildUpsertStatement(
   );
   const params: unknown[] = [];
   const insertPlaceholders = columns.map((column) => {
-    params.push(fullData[column]);
+    params.push(serializeForColumn(metadata, column, fullData[column]));
     return `$${params.length}`;
   });
 
@@ -819,7 +857,7 @@ function buildTableApi<
     const recordData = stamped as AnyRecord;
     const params: unknown[] = [];
     const assignments = setColumns.map((column) => {
-      params.push(recordData[column]);
+      params.push(serializeForColumn(metadata, column, recordData[column]));
       return `"${column}" = $${params.length}`;
     });
     const { text: whereClause, params: whereParams } = compileFilter(
@@ -864,7 +902,7 @@ function buildTableApi<
     const recordData = stamped as AnyRecord;
     const params: unknown[] = [];
     const assignments = setColumns.map((column) => {
-      params.push(recordData[column]);
+      params.push(serializeForColumn(metadata, column, recordData[column]));
       return `"${column}" = $${params.length}`;
     });
     const { text: whereClause, params: whereParams } = compileFilter(
