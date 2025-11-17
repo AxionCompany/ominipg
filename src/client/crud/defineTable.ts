@@ -138,6 +138,79 @@ function normalizeTimestamps(
   return Object.freeze({ createdAt, updatedAt }) as TableTimestampColumns;
 }
 
+/**
+ * Defines database table schemas with JSON Schema and generates type-safe CRUD types.
+ * 
+ * This function creates immutable schema definitions that are used to generate
+ * TypeScript types and CRUD APIs. Each table schema includes:
+ * - JSON Schema for validation
+ * - Primary key definitions
+ * - Optional timestamp configuration
+ * - Optional default values
+ * 
+ * The returned schemas include type inference helpers (`$inferSelect`, `$inferInsert`)
+ * for extracting TypeScript types from the schema definitions.
+ * 
+ * @typeParam S - The schema configuration object type
+ * @param schemas - Object mapping table names to schema configurations
+ * @returns Frozen schema definitions with type inference helpers
+ * 
+ * @example
+ * ```typescript
+ * const schemas = defineSchema({
+ *   users: {
+ *     schema: {
+ *       type: "object",
+ *       properties: {
+ *         id: { type: "string" },
+ *         name: { type: "string" },
+ *         email: { type: "string" },
+ *         age: { type: "number" }
+ *       },
+ *       required: ["id", "name", "email"]
+ *     },
+ *     keys: [{ property: "id" }],
+ *     timestamps: true
+ *   },
+ *   posts: {
+ *     schema: {
+ *       type: "object",
+ *       properties: {
+ *         id: { type: "string" },
+ *         title: { type: "string" },
+ *         authorId: { type: "string" }
+ *       },
+ *       required: ["id", "title", "authorId"]
+ *     },
+ *     keys: [{ property: "id" }],
+ *     timestamps: { createdAt: "created_at", updatedAt: "updated_at" }
+ *   }
+ * });
+ * 
+ * // Type inference
+ * type User = typeof schemas.users.$inferSelect;
+ * type NewUser = typeof schemas.users.$inferInsert;
+ * ```
+ * 
+ * @example
+ * ```typescript
+ * // With default values
+ * const schemas = defineSchema({
+ *   users: {
+ *     schema: {
+ *       type: "object",
+ *       properties: { id: { type: "string" }, status: { type: "string" } },
+ *       required: ["id"]
+ *     },
+ *     keys: [{ property: "id" }],
+ *     defaults: {
+ *       status: "active",
+ *       createdAt: () => new Date().toISOString()
+ *     }
+ *   }
+ * });
+ * ```
+ */
 export function defineSchema<
   const S extends Record<
     string,

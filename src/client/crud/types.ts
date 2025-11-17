@@ -1,6 +1,12 @@
 import type { FromSchema, JSONSchema } from "npm:json-schema-to-ts@3.1.1";
 import type { ZodTypeAny } from "npm:zod@3.23.8";
 
+/**
+ * JSON Schema type definition.
+ * 
+ * Represents a JSON Schema object used for table schema definitions and validation.
+ * This is an alias for the JSONSchema type from json-schema-to-ts.
+ */
 export type JsonSchema = JSONSchema;
 
 export type JsonPointer = `#${string}`;
@@ -11,23 +17,83 @@ export interface TableRelationDefinition {
   readonly target: string;
 }
 
+/**
+ * Configuration for automatic timestamp columns.
+ * 
+ * When enabled, Ominipg will automatically manage `createdAt` and `updatedAt`
+ * columns. You can customize the column names or use the defaults.
+ * 
+ * @example
+ * ```typescript
+ * // Use defaults (created_at, updated_at)
+ * timestamps: true
+ * 
+ * // Custom column names
+ * timestamps: {
+ *   createdAt: "created_at",
+ *   updatedAt: "modified_at"
+ * }
+ * ```
+ */
 export interface TableTimestampConfig {
+  /** Column name for creation timestamp (default: "created_at") */
   readonly createdAt?: string;
+  /** Column name for update timestamp (default: "updated_at") */
   readonly updatedAt?: string;
 }
 
+/**
+ * Normalized timestamp column configuration.
+ * 
+ * This is the normalized form of TableTimestampConfig where both column names
+ * are required (after applying defaults).
+ */
 export interface TableTimestampColumns {
+  /** Column name for creation timestamp */
   readonly createdAt: string;
+  /** Column name for update timestamp */
   readonly updatedAt: string;
 }
 
+/**
+ * Primary key definition for a table.
+ * 
+ * Defines which properties form the primary key of a table. Supports both
+ * simple keys (single property) and composite keys (multiple properties).
+ * 
+ * @example
+ * ```typescript
+ * // Simple key
+ * keys: [{ property: "id" }]
+ * 
+ * // Composite key
+ * keys: [
+ *   { property: "userId" },
+ *   { property: "postId" }
+ * ]
+ * ```
+ */
 export interface TableKeyDefinition {
+  /** The property name that forms part of the primary key */
   readonly property: string;
+  /** Optional JSON pointer reference for nested properties */
   readonly $ref?: JsonPointer;
 }
 
 export type DefaultMap = Readonly<Record<string, unknown | (() => unknown)>>;
 
+/**
+ * Complete table schema configuration.
+ * 
+ * Defines all aspects of a table schema including validation, keys, timestamps,
+ * and default values. This is the normalized form used internally after
+ * processing user-provided schema definitions.
+ * 
+ * @typeParam Schema - The JSON Schema for the table
+ * @typeParam Keys - The primary key definitions
+ * @typeParam Timestamps - Timestamp column configuration (if enabled)
+ * @typeParam Defaults - Default values map (if provided)
+ */
 export type TableSchemaConfig<
   Schema extends JsonSchema,
   Keys extends readonly TableKeyDefinition[],
@@ -52,8 +118,30 @@ export type AnyTableSchemaConfig = TableSchemaConfig<
   DefaultMap | undefined
 >;
 
+/**
+ * Collection of table schema definitions.
+ * 
+ * Maps table names to their schema configurations. Used as input to
+ * `defineSchema()` and `createCrudApi()`.
+ * 
+ * @example
+ * ```typescript
+ * const schemas: CrudSchemas = {
+ *   users: { schema: {...}, keys: [{ property: "id" }] },
+ *   posts: { schema: {...}, keys: [{ property: "id" }] }
+ * };
+ * ```
+ */
 export type CrudSchemas = Record<string, AnyTableSchemaConfig>;
 
+/**
+ * Infers TypeScript type from a JSON Schema.
+ * 
+ * Utility type that extracts the TypeScript type corresponding to a JSON Schema.
+ * Used internally for type inference in CRUD operations.
+ * 
+ * @typeParam Schema - The JSON Schema to infer from
+ */
 export type InferRow<Schema extends JsonSchema> = FromSchema<Schema>;
 
 type Simplify<T> = { [K in keyof T]: T[K] } extends infer O ? {
@@ -348,6 +436,22 @@ type SetOptional<
   Omit<T, Keys> & Partial<Pick<T, Keys>>
 >;
 
+/**
+ * Type representing a row from a CRUD table.
+ * 
+ * This is the inferred type for rows returned from CRUD operations (find, create, etc.).
+ * It includes all properties from the schema, excluding relation keys (which are
+ * replaced by relation objects when populated).
+ * 
+ * @typeParam Schemas - The schema definitions
+ * @typeParam TableName - The name of the table
+ * 
+ * @example
+ * ```typescript
+ * const schemas = defineSchema({ users: { ... } });
+ * type User = CrudRow<typeof schemas, "users">;
+ * ```
+ */
 export type CrudRow<
   Schemas extends CrudSchemas,
   TableName extends keyof Schemas,
@@ -371,6 +475,22 @@ type KeySelection<
   TableName extends keyof Schemas,
 > = Extract<KeyNames<Schemas, TableName>, keyof CrudRow<Schemas, TableName>>;
 
+/**
+ * Infers the primary key type for a table.
+ * 
+ * Extracts the type representing the primary key fields of a table.
+ * Useful for type-safe filter operations and lookups.
+ * 
+ * @typeParam Schemas - The schema definitions
+ * @typeParam TableName - The name of the table
+ * 
+ * @example
+ * ```typescript
+ * const schemas = defineSchema({ users: { ... } });
+ * type UserKey = InferKey<typeof schemas, "users">;
+ * // UserKey = { id: string } (if id is the primary key)
+ * ```
+ */
 export type InferKey<
   Schemas extends CrudSchemas,
   TableName extends keyof Schemas,
@@ -434,6 +554,17 @@ export interface CrudQueryOptions<PopulateKey extends string = string> {
 
 export type CrudFilter = Record<string, unknown>;
 
+/**
+ * CRUD API interface for a single table.
+ * 
+ * Provides type-safe CRUD operations (create, read, update, delete) with
+ * support for filtering, sorting, pagination, and relation population.
+ * 
+ * @typeParam Row - The row type (result of CRUD operations)
+ * @typeParam Relations - The relation types (when populated)
+ * @typeParam Writable - The writable row type (for create/update)
+ * @typeParam PopulateKey - Union of relation names that can be populated
+ */
 export type CrudTableApi<
   Row,
   Relations,
@@ -485,6 +616,21 @@ export type CrudTableApi<
   deleteMany(filter: CrudFilter | undefined): Promise<{ count: number }>;
 };
 
+/**
+ * Complete CRUD API for all tables in a schema.
+ * 
+ * Maps each table name to its CRUD API, providing type-safe access to
+ * all CRUD operations across all tables.
+ * 
+ * @typeParam Schemas - The schema definitions
+ * 
+ * @example
+ * ```typescript
+ * const schemas = defineSchema({ users: {...}, posts: {...} });
+ * const crud = createCrudApi(schemas, queryFn);
+ * // crud.users and crud.posts are now available
+ * ```
+ */
 export type CrudApi<Schemas extends CrudSchemas> = {
   [TableName in keyof Schemas]: CrudTableApi<
     CrudBaseRow<Schemas, TableName>,

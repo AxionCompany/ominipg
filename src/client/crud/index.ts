@@ -1,3 +1,52 @@
+/**
+ * @module
+ * 
+ * CRUD API Module - MongoDB-style database operations for PostgreSQL.
+ * 
+ * This module provides a standalone CRUD API that can be used with any PostgreSQL
+ * database library. It includes schema definition, type inference, and powerful
+ * query filtering capabilities.
+ * 
+ * The CRUD API can be used in two ways:
+ * 1. **Integrated with Ominipg**: Automatically available when schemas are provided
+ * 2. **Standalone**: Use with any database library via `createCrudApi`
+ * 
+ * @example
+ * ```typescript
+ * // Standalone usage with any database library
+ * import { defineSchema, createCrudApi } from "jsr:@oxian/ominipg/crud";
+ * import postgres from "npm:postgres";
+ * 
+ * const sql = postgres(DATABASE_URL);
+ * const schemas = defineSchema({
+ *   users: {
+ *     schema: {
+ *       type: "object",
+ *       properties: { id: { type: "string" }, name: { type: "string" } },
+ *       required: ["id", "name"]
+ *     },
+ *     keys: [{ property: "id" }]
+ *   }
+ * });
+ * 
+ * async function queryFn(sql: string, params?: unknown[]) {
+ *   const result = await sql.unsafe(sql, params);
+ *   return { rows: result };
+ * }
+ * 
+ * const crud = createCrudApi(schemas, queryFn);
+ * const users = await crud.users.find({ name: { $like: "A%" } });
+ * ```
+ * 
+ * @example
+ * ```typescript
+ * // Type inference
+ * const schemas = defineSchema({ users: { ... } });
+ * type User = typeof schemas.users.$inferSelect;
+ * type NewUser = typeof schemas.users.$inferInsert;
+ * ```
+ */
+
 import type {
   CrudApi,
   CrudFilter,
@@ -970,6 +1019,56 @@ function buildTableApi<
   return apiRecord as CrudTableApi<Row, Relations, Writable, PopulateKey>;
 }
 
+/**
+ * Creates a CRUD API from schema definitions and a query execution function.
+ * 
+ * This function generates type-safe CRUD operations for each table defined in
+ * the schemas. The resulting API provides MongoDB-style query filters, automatic
+ * validation, and full TypeScript type inference.
+ * 
+ * @typeParam Schemas - The schema definitions type
+ * @param schemas - Schema definitions created with `defineSchema`
+ * @param execute - Function that executes SQL queries and returns results
+ * @returns CRUD API object with methods for each table (find, create, update, delete, etc.)
+ * 
+ * @example
+ * ```typescript
+ * const schemas = defineSchema({
+ *   users: {
+ *     schema: {
+ *       type: "object",
+ *       properties: {
+ *         id: { type: "string" },
+ *         name: { type: "string" },
+ *         email: { type: "string" }
+ *       },
+ *       required: ["id", "name", "email"]
+ *     },
+ *     keys: [{ property: "id" }],
+ *     timestamps: true
+ *   }
+ * });
+ * 
+ * async function queryFn(sql: string, params?: unknown[]) {
+ *   // Your database query implementation
+ *   const result = await yourDb.query(sql, params);
+ *   return { rows: result.rows };
+ * }
+ * 
+ * const crud = createCrudApi(schemas, queryFn);
+ * 
+ * // Use the CRUD API
+ * const user = await crud.users.create({
+ *   id: "1",
+ *   name: "Alice",
+ *   email: "alice@example.com"
+ * });
+ * 
+ * const adults = await crud.users.find({
+ *   age: { $gte: 18 }
+ * });
+ * ```
+ */
 export function createCrudApi<Schemas extends CrudSchemas>(
   schemas: Schemas,
   execute: ExecuteFn,
