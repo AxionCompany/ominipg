@@ -640,15 +640,6 @@ export {
 export type {
   CrudApi,
   CrudSchemas,
-  CrudTableApi,
-  CrudRow,
-  InferKey,
-  InferRow,
-  JsonSchema,
-  TableSchemaConfig,
-  TableKeyDefinition,
-  TableTimestampConfig,
-  TableTimestampColumns,
 } from "./crud/index.ts";
 export type {
   OminipgConnectionOptions,

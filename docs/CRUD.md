@@ -242,23 +242,15 @@ const newUser: NewUser = {
 await db.crud.users.create(newUser);
 ```
 
-### Using Utility Types (Alternative)
+### Using `$infer` Helpers (Preferred)
 
-You can also use utility types if you prefer:
+Every table definition exposes `$inferSelect`, `$inferInsert`, and `$inferKey`
+to avoid extra imports:
 
 ```typescript
-import type { CrudRow, InferRow, InferKey } from "jsr:@oxian/ominipg";
-
-// Infer the full row type
-type User = CrudRow<typeof schemas, "users">;
-
-// Infer insert type
-type UserInsert = InferRow<typeof schemas, "users", "insert">;
-
-// Infer key type
-type UserKey = InferKey<typeof schemas, "users">;
-// For single key: string
-// For composite: { userId: string; roleId: string }
+type User = typeof schemas.users.$inferSelect;
+type UserInsert = typeof schemas.users.$inferInsert;
+type UserKey = typeof schemas.users.$inferKey;
 ```
 
 ---

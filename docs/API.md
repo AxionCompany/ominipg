@@ -642,18 +642,9 @@ const schemas = defineSchema({
   users: { /* schema */ }
 });
 
-// Easiest way - no imports needed!
 type User = typeof schemas.users.$inferSelect;      // Full row type
 type NewUser = typeof schemas.users.$inferInsert;   // Insert type
-```
-
-**Alternative - Utility Types:**
-```typescript
-import type { CrudRow, InferRow, InferKey } from "jsr:@oxian/ominipg";
-
-type User = CrudRow<typeof schemas, "users">;
-type UserInsert = InferRow<typeof schemas, "users", "insert">;
-type UserKey = InferKey<typeof schemas, "users">;
+type UserKey = typeof schemas.users.$inferKey;       // Key type
 ```
 
 See [CRUD API Guide](./CRUD.md) for complete type documentation.

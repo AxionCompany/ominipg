@@ -460,16 +460,9 @@ const schemas = defineSchema({
   }
 });
 
-// Easiest way - no imports needed!
 type User = typeof schemas.users.$inferSelect;
 type NewUser = typeof schemas.users.$inferInsert;
-
-// Alternative - with utility types
-import type { CrudRow, InferRow, InferKey } from "jsr:@oxian/ominipg";
-
-type User = CrudRow<typeof schemas, "users">;
-type UserInsert = InferRow<typeof schemas, "users", "insert">;
-type UserKey = InferKey<typeof schemas, "users">;
+type UserKey = typeof schemas.users.$inferKey;
 ```
 
 ---

@@ -167,7 +167,7 @@ class Ominipg extends TypedEmitter {
   private worker?: Worker;
   private requests?: RequestManager;
   private pool?: PgPool;
-  public crud?: CrudApi;
+  public crud?: Record<string, unknown>;
   
   static async connect(options) { /* ... */ }
   async query(sql, params) { /* ... */ }
