@@ -21,6 +21,17 @@ Complete API documentation for Ominipg.
 
 The main class for interacting with PostgreSQL databases.
 
+### Type imports
+
+```typescript
+import type {
+  OminipgConnectionOptions,
+  CrudSchemas,
+  CrudApi,
+  OminipgClientEvents,
+} from "jsr:@oxian/ominipg";
+```
+
 ### `Ominipg.connect(options)`
 
 Creates a new database connection.
