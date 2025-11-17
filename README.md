@@ -1,9 +1,13 @@
-# Ominipg
-
-> **The flexible, all-in-one toolkit for PostgreSQL in Deno**
-
-[![JSR](https://jsr.io/badges/@oxian/ominipg)](https://jsr.io/@oxian/ominipg)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<div align="center">
+  <img src="./assets/logo_color.png" alt="Ominipg Logo" width="200">
+  
+  # Ominipg
+  
+  > **The flexible, all-in-one toolkit for PostgreSQL in Deno**
+  
+  [![JSR](https://jsr.io/badges/@oxian/ominipg)](https://jsr.io/@oxian/ominipg)
+  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+</div>
 
 Ominipg is a flexible PostgreSQL toolkit for Deno that combines the power of [PGlite](https://github.com/electric-sql/pglite) (PostgreSQL in WASM) with a modern, developer-friendly API. Build local-first applications, use powerful CRUD operations with MongoDB-style filters, or integrate with your favorite ORM—all with full TypeScript type safety.
 

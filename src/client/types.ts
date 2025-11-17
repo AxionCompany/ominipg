@@ -1,6 +1,34 @@
+/**
+ * @module
+ *
+ * Shared type definitions for the public Ominipg client API.
+ *
+ * This file contains the connection options, client events, and other
+ * types that are consumed by both the main client and helper utilities.
+ */
+
 import type { CrudSchemas } from "./crud/types.ts";
 import type { PGliteConfig } from "../shared/types.ts";
 
+/**
+ * Configuration options for establishing an Ominipg connection.
+ *
+ * These options control whether Ominipg connects to an in-memory PGlite
+ * database, a file-backed instance, or a remote PostgreSQL server. They
+ * also enable optional sync, CRUD schema support, and advanced tuning.
+ *
+ * @example
+ * ```typescript
+ * const db = await Ominipg.connect({
+ *   url: ":memory:",
+ *   syncUrl: "postgresql://user:pass@host:5432/db",
+ *   schemaSQL: [
+ *     "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT)"
+ *   ],
+ *   schemas: defineSchema({ users: { ... } }),
+ * });
+ * ```
+ */
 export interface OminipgConnectionOptions {
   /**
    * The URL of the main database.
@@ -91,6 +119,13 @@ export interface OminipgConnectionOptions {
   schemas?: CrudSchemas;
 }
 
+/**
+ * Typed event map emitted by the Ominipg client.
+ *
+ * Extend or reference this interface when working with the strongly-typed
+ * event emitter provided by Ominipg. Each key represents an event name and
+ * the corresponding value describes the listener signature.
+ */
 export interface OminipgClientEvents {
   "connected": () => void;
   "sync:start": () => void;

@@ -650,6 +650,10 @@ export type {
   TableTimestampConfig,
   TableTimestampColumns,
 } from "./crud/index.ts";
+export type {
+  OminipgConnectionOptions,
+  OminipgClientEvents,
+} from "./types.ts";
 
 /**
  * Creates a Drizzle ORM adapter for an Ominipg instance.
