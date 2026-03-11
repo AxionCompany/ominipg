@@ -300,26 +300,12 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       const client = await pool.connect();
       try {
         await client.query("SELECT 1");
-        if (options.schemaSQL && options.schemaSQL.length > 0) {
-          await client.query("BEGIN");
+        for (const stmt of options.schemaSQL ?? []) {
           try {
-            for (const stmt of options.schemaSQL) {
-              try {
-                await client.query(stmt);
-              } catch (err) {
-                const message = err instanceof Error
-                  ? err.message
-                  : String(err);
-                console.warn(
-                  `Direct mode DDL execution failed (this may be ok):`,
-                  message,
-                );
-              }
-            }
-            await client.query("COMMIT");
-          } catch (ddlErr) {
-            await client.query("ROLLBACK");
-            throw ddlErr;
+            await client.query(stmt);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`Direct mode DDL execution failed (this may be ok):`, message);
           }
         }
       } finally {
