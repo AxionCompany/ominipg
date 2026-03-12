@@ -626,6 +626,7 @@ export {
 export type {
   CrudApi,
   CrudSchemas,
+  JsonSchema,
 } from "./crud/index.ts";
 export type {
   OminipgConnectionOptions,
