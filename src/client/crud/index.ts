@@ -412,11 +412,12 @@ function applyValidation<RowType extends AnyRecord>(
 function validateInput<T extends AnyRecord>(
   data: T,
   metadata: TableMetadata,
-  mode: "create" | "update",
 ): T {
-  const schema = mode === "create" ? metadata.zodInput : metadata.zodInputPartial;
-  if (!schema) return data;
-  return schema.parse(data) as T;
+  // Use partial+strict for input: validates types of provided fields and
+  // rejects unknown properties, but does not require any field — auto-generated
+  // fields like id, createdAt, updatedAt may be absent.
+  if (!metadata.zodInputPartial) return data;
+  return metadata.zodInputPartial.parse(data) as T;
 }
 
 function pickValidationFlag(options?: CrudQueryOptions): boolean {
@@ -839,7 +840,7 @@ function buildTableApi<
     options?: { validateOutput?: boolean },
   ): Promise<ResultRow> {
     ensureObject(data);
-    validateInput(data as AnyRecord, metadata, "create");
+    validateInput(data as AnyRecord, metadata);
     const stamped = applyTimestamps({ ...data }, "create") as Writable;
     const { value: withDefaults } = applyInsertDefaults(stamped as AnyRecord);
     const { sql, params } = buildInsertStatement(metadata, [withDefaults]);
@@ -862,7 +863,7 @@ function buildTableApi<
     const prepared: Writable[] = [];
     for (const item of list) {
       ensureObject(item);
-      validateInput(item as AnyRecord, metadata, "create");
+      validateInput(item as AnyRecord, metadata);
       const stamped = applyTimestamps({ ...item }, "create") as Writable;
       const { value: withDefaults } = applyInsertDefaults(stamped as AnyRecord);
       prepared.push(withDefaults as Writable);
@@ -883,7 +884,7 @@ function buildTableApi<
     options?: { upsert?: boolean; validateOutput?: boolean },
   ): Promise<ResultRow | null> {
     ensureObject(data);
-    validateInput(data as AnyRecord, metadata, "update");
+    validateInput(data as AnyRecord, metadata);
     if (options?.upsert) {
       const stamped = applyTimestamps({ ...data }, "upsert") as AnyRecord;
       const { value: withDefaults, defaultOnlyFields } = applyInsertDefaults(
@@ -946,7 +947,7 @@ function buildTableApi<
     options?: { upsert?: boolean; validateOutput?: boolean },
   ): Promise<{ rows: ResultRow[]; count: number }> {
     ensureObject(data);
-    validateInput(data as AnyRecord, metadata, "update");
+    validateInput(data as AnyRecord, metadata);
     if (options?.upsert) {
       throw new Error("updateMany does not support upsert.");
     }

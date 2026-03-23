@@ -638,9 +638,6 @@ export function buildMetadataMap(
     const zodPartial = zodSchema instanceof z.ZodObject
       ? zodSchema.partial()
       : zodSchema;
-    const zodInput = zodSchema instanceof z.ZodObject
-      ? zodSchema.strict()
-      : zodSchema;
     const zodInputPartial = zodSchema instanceof z.ZodObject
       ? zodSchema.partial().strict()
       : zodSchema;
@@ -659,7 +656,6 @@ export function buildMetadataMap(
       timestamps: timestampConfig,
       zod: zodSchema,
       zodPartial,
-      zodInput,
       zodInputPartial,
       staticDefaults,
       dynamicDefaults,

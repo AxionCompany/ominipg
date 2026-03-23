@@ -1,5 +1,4 @@
 import {
-  activePgliteExtensions,
   mainDb,
   mainDbType,
   meta,
@@ -197,9 +196,6 @@ export async function bootstrapSchema(
   for (const stmt of ddl) {
     const skippableExtension = getSkippableExtension(stmt);
     if (skippableExtension) {
-      console.log(
-        `Skipping redundant extension statement for PGlite: ${skippableExtension}`,
-      );
       continue;
     }
     if (await tryHandleDuplicateObjectDoBlock(stmt)) {
