@@ -247,12 +247,12 @@ async function initializePGlite(
     // Ignore mkdir errors
   }
   try {
-    // On re-open, passing extension WASM modules to the PGlite constructor
-    // can abort the WASM runtime. Open WITHOUT extensions for existing
-    // databases; the extension SQL objects are already in the catalog.
-    const useConfig = isExistingDb ? pgliteConfig : mergedConfig;
-    const pglite = useConfig
-      ? new PGlite(dbPath, useConfig)
+    // Extension WASM modules must always be in the constructor config so that
+    // extension functions (vector ops, pg_trgm, etc.) are available at runtime.
+    // On re-open, we skip CREATE EXTENSION SQL (which aborts the WASM) but
+    // still need the modules loaded.
+    const pglite = mergedConfig
+      ? new PGlite(dbPath, mergedConfig)
       : new PGlite(dbPath);
     const adapter = new PGliteAdapter(pglite as unknown as PGliteLike);
     let activatedSqlNames: string[] = [];
