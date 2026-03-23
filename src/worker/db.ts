@@ -323,11 +323,30 @@ async function createExtensions(
     "tsm_system_time": "tsm_system_time",
   };
 
+  // On file-based PGlite, extensions may already be persisted from a previous
+  // run. Re-running CREATE EXTENSION can abort the WASM runtime, bricking the
+  // entire instance. Query pg_extension first and skip anything already present.
+  let existing: Set<string>;
+  try {
+    const result = await adapter.query("SELECT extname FROM pg_extension");
+    existing = new Set(
+      (result.rows as Array<{ extname: string }>).map((r) =>
+        r.extname.toLowerCase()
+      ),
+    );
+  } catch {
+    existing = new Set();
+  }
+
   const activated: string[] = [];
 
   for (const extensionName of extensionNames) {
     try {
       const sqlName = extensionSqlNames[extensionName] || extensionName;
+      if (existing.has(sqlName.toLowerCase())) {
+        activated.push(sqlName);
+        continue;
+      }
       await adapter.exec(`CREATE EXTENSION IF NOT EXISTS "${sqlName}"`);
       activated.push(sqlName);
     } catch (error) {

@@ -370,7 +370,7 @@ function jsonSchemaToZod(schema: JsonSchema, root: RootSchema): z.ZodTypeAny {
           (schema as { additionalProperties?: boolean | JsonSchema })
             .additionalProperties;
         if (additional === false) {
-          return base.strict();
+          return base;
         }
         if (additional && typeof additional === "object") {
           return base.catchall(jsonSchemaToZod(additional, root));
@@ -638,6 +638,12 @@ export function buildMetadataMap(
     const zodPartial = zodSchema instanceof z.ZodObject
       ? zodSchema.partial()
       : zodSchema;
+    const zodInput = zodSchema instanceof z.ZodObject
+      ? zodSchema.strict()
+      : zodSchema;
+    const zodInputPartial = zodSchema instanceof z.ZodObject
+      ? zodSchema.partial().strict()
+      : zodSchema;
 
     const metadata: TableMetadata = {
       tableName,
@@ -653,6 +659,8 @@ export function buildMetadataMap(
       timestamps: timestampConfig,
       zod: zodSchema,
       zodPartial,
+      zodInput,
+      zodInputPartial,
       staticDefaults,
       dynamicDefaults,
     };

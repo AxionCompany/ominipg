@@ -527,6 +527,8 @@ export interface TableMetadata {
   timestamps?: TableTimestampColumns;
   zod?: ZodTypeAny;
   zodPartial?: ZodTypeAny;
+  zodInput?: ZodTypeAny;
+  zodInputPartial?: ZodTypeAny;
   /** Static defaults applied on insert if field is undefined. */
   staticDefaults?: Readonly<Record<string, unknown>>;
   /** Dynamic defaults applied on insert if field is undefined. */

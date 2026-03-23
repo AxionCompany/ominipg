@@ -409,6 +409,16 @@ function applyValidation<RowType extends AnyRecord>(
   return rows.map((row) => metadata.zod!.parse(row) as RowType);
 }
 
+function validateInput<T extends AnyRecord>(
+  data: T,
+  metadata: TableMetadata,
+  mode: "create" | "update",
+): T {
+  const schema = mode === "create" ? metadata.zodInput : metadata.zodInputPartial;
+  if (!schema) return data;
+  return schema.parse(data) as T;
+}
+
 function pickValidationFlag(options?: CrudQueryOptions): boolean {
   return options?.validateOutput ?? true;
 }
@@ -829,6 +839,7 @@ function buildTableApi<
     options?: { validateOutput?: boolean },
   ): Promise<ResultRow> {
     ensureObject(data);
+    validateInput(data as AnyRecord, metadata, "create");
     const stamped = applyTimestamps({ ...data }, "create") as Writable;
     const { value: withDefaults } = applyInsertDefaults(stamped as AnyRecord);
     const { sql, params } = buildInsertStatement(metadata, [withDefaults]);
@@ -851,6 +862,7 @@ function buildTableApi<
     const prepared: Writable[] = [];
     for (const item of list) {
       ensureObject(item);
+      validateInput(item as AnyRecord, metadata, "create");
       const stamped = applyTimestamps({ ...item }, "create") as Writable;
       const { value: withDefaults } = applyInsertDefaults(stamped as AnyRecord);
       prepared.push(withDefaults as Writable);
@@ -871,6 +883,7 @@ function buildTableApi<
     options?: { upsert?: boolean; validateOutput?: boolean },
   ): Promise<ResultRow | null> {
     ensureObject(data);
+    validateInput(data as AnyRecord, metadata, "update");
     if (options?.upsert) {
       const stamped = applyTimestamps({ ...data }, "upsert") as AnyRecord;
       const { value: withDefaults, defaultOnlyFields } = applyInsertDefaults(
@@ -933,6 +946,7 @@ function buildTableApi<
     options?: { upsert?: boolean; validateOutput?: boolean },
   ): Promise<{ rows: ResultRow[]; count: number }> {
     ensureObject(data);
+    validateInput(data as AnyRecord, metadata, "update");
     if (options?.upsert) {
       throw new Error("updateMany does not support upsert.");
     }
