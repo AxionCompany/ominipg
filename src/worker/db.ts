@@ -247,17 +247,19 @@ async function initializePGlite(
     // Ignore mkdir errors
   }
   try {
-    const pglite = mergedConfig
-      ? new PGlite(dbPath, mergedConfig)
+    // On re-open, passing extension WASM modules to the PGlite constructor
+    // can abort the WASM runtime. Open WITHOUT extensions for existing
+    // databases; the extension SQL objects are already in the catalog.
+    const useConfig = isExistingDb ? pgliteConfig : mergedConfig;
+    const pglite = useConfig
+      ? new PGlite(dbPath, useConfig)
       : new PGlite(dbPath);
     const adapter = new PGliteAdapter(pglite as unknown as PGliteLike);
     let activatedSqlNames: string[] = [];
     if (loadedExtensionNames.length > 0) {
       if (isExistingDb) {
-        // Re-opening an existing file database. Extensions are already
-        // persisted in the catalog from the first run. Running CREATE
-        // EXTENSION again can abort PGlite's WASM runtime, bricking
-        // the instance. Record them as active and skip creation.
+        // Extensions are already persisted from the first run. Record
+        // them as active so DDL CREATE EXTENSION statements are skipped.
         const sqlNames: Record<string, string> = {
           "uuid_ossp": "uuid-ossp", "vector": "vector", "live": "live",
           "amcheck": "amcheck", "auto_explain": "auto_explain",

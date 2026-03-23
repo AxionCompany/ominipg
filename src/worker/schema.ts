@@ -37,11 +37,9 @@ function getSkippableExtension(stmt: string): string | null {
     /^\s*CREATE\s+EXTENSION(?:\s+IF\s+NOT\s+EXISTS)?\s+"?([A-Za-z0-9_\-]+)"?/i,
   );
   if (!match) return null;
-  const extensionName = match[1].toLowerCase();
-  if (!activePgliteExtensions.has(extensionName)) {
-    return null;
-  }
-  return extensionName;
+  // PGlite manages extensions via WASM modules passed to the constructor,
+  // not via DDL. Always skip CREATE EXTENSION in DDL for PGlite.
+  return match[1].toLowerCase();
 }
 
 async function tryHandleDuplicateObjectDoBlock(stmt: string): Promise<boolean> {
