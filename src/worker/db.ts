@@ -231,6 +231,13 @@ async function initializePGlite(
 
   const dbPath = url.replace("file://", "");
   const before = getRssMb();
+  let isExistingDb = false;
+  try {
+    const stat = await Deno.stat(dbPath);
+    isExistingDb = stat.isDirectory;
+  } catch (_) {
+    // Directory doesn't exist — fresh database
+  }
   try {
     const slash = dbPath.lastIndexOf("/");
     if (slash > 0) {
@@ -246,7 +253,31 @@ async function initializePGlite(
     const adapter = new PGliteAdapter(pglite as unknown as PGliteLike);
     let activatedSqlNames: string[] = [];
     if (loadedExtensionNames.length > 0) {
-      activatedSqlNames = await createExtensions(adapter, loadedExtensionNames);
+      if (isExistingDb) {
+        // Re-opening an existing file database. Extensions are already
+        // persisted in the catalog from the first run. Running CREATE
+        // EXTENSION again can abort PGlite's WASM runtime, bricking
+        // the instance. Record them as active and skip creation.
+        const sqlNames: Record<string, string> = {
+          "uuid_ossp": "uuid-ossp", "vector": "vector", "live": "live",
+          "amcheck": "amcheck", "auto_explain": "auto_explain",
+          "bloom": "bloom", "btree_gin": "btree_gin",
+          "btree_gist": "btree_gist", "citext": "citext", "cube": "cube",
+          "earthdistance": "earthdistance", "fuzzystrmatch": "fuzzystrmatch",
+          "hstore": "hstore", "isn": "isn", "lo": "lo", "ltree": "ltree",
+          "pg_trgm": "pg_trgm", "seg": "seg", "tablefunc": "tablefunc",
+          "tcn": "tcn", "tsm_system_rows": "tsm_system_rows",
+          "tsm_system_time": "tsm_system_time",
+        };
+        activatedSqlNames = loadedExtensionNames.map(
+          (name) => sqlNames[name] || name,
+        );
+      } else {
+        activatedSqlNames = await createExtensions(
+          adapter,
+          loadedExtensionNames,
+        );
+      }
       if (logMetrics) {
         const after = getRssMb();
         if (after != null && before != null) {
