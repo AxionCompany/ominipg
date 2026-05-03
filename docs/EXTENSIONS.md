@@ -19,9 +19,12 @@ Enhance your local database with powerful PostgreSQL extensions.
 
 ## Overview
 
-**Extensions** are PostgreSQL plugins that add extra functionality to your database. When using PGlite (in-memory or local databases), Ominipg supports loading extensions dynamically.
+**Extensions** are PostgreSQL plugins that add extra functionality to your
+database. When using PGlite (in-memory or local databases), Ominipg supports
+loading extensions dynamically.
 
 **Key Points:**
+
 - ✅ Extensions work with **PGlite only** (`:memory:` or file-based)
 - ❌ Extensions are **not loaded** for PostgreSQL connections
 - 🔌 Extensions are loaded **at connection time**
@@ -43,14 +46,15 @@ Extensions unlock advanced features:
 
 Popular extensions supported by PGlite:
 
-| Extension | Description | Use Case |
-|-----------|-------------|----------|
-| `uuid_ossp` | UUID generation functions | Generate unique IDs |
-| `vector` | Vector similarity search (pgvector) | AI embeddings, semantic search |
-| `postgis` | Geographic information system | Maps, location queries |
-| `pg_trgm` | Trigram text search | Fuzzy text matching |
+| Extension   | Description                         | Use Case                       |
+| ----------- | ----------------------------------- | ------------------------------ |
+| `uuid_ossp` | UUID generation functions           | Generate unique IDs            |
+| `vector`    | Vector similarity search (pgvector) | AI embeddings, semantic search |
+| `postgis`   | Geographic information system       | Maps, location queries         |
+| `pg_trgm`   | Trigram text search                 | Fuzzy text matching            |
 
-**Note:** Extension availability depends on your PGlite version and build configuration.
+**Note:** Extension availability depends on your PGlite version and build
+configuration.
 
 ---
 
@@ -62,10 +66,12 @@ Specify extensions in the `pgliteExtensions` option:
 
 ```typescript
 import { Ominipg } from "jsr:@oxian/ominipg";
+import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
 const db = await Ominipg.connect({
   url: ":memory:", // Must use PGlite
-  
+  pgliteProvider: createPGliteProvider(),
+
   // Load extensions
   pgliteExtensions: ["uuid_ossp", "vector"],
 
@@ -73,15 +79,15 @@ const db = await Ominipg.connect({
   pgliteConfig: {
     initialMemory: 256 * 1024 * 1024,
   },
-  
+
   schemaSQL: [
     // Now you can use extension features
     `CREATE TABLE products (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
       name TEXT NOT NULL,
       embedding VECTOR(384)
-    )`
-  ]
+    )`,
+  ],
 });
 ```
 
@@ -92,8 +98,9 @@ Handle cases where extensions aren't available:
 ```typescript
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   pgliteExtensions: ["uuid_ossp", "vector"],
-  schemaSQL: [/* ... */]
+  schemaSQL: [/* ... */],
 });
 
 // Test if extension is available
@@ -117,14 +124,15 @@ Generate universally unique identifiers without sequences.
 ```typescript
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   pgliteExtensions: ["uuid_ossp"],
   schemaSQL: [
     `CREATE TABLE users (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
       name TEXT NOT NULL,
       email TEXT UNIQUE
-    )`
-  ]
+    )`,
+  ],
 });
 ```
 
@@ -150,10 +158,13 @@ await db.query(`
 `);
 
 // Insert without specifying ID
-await db.query(`
+await db.query(
+  `
   INSERT INTO orders (customer_id, total) 
   VALUES ($1, $2)
-`, [customerId, 99.99]);
+`,
+  [customerId, 99.99],
+);
 ```
 
 #### `uuid_generate_v1()`
@@ -177,13 +188,15 @@ console.log(result.rows[0].id);
 ### Use Cases
 
 **Distributed Systems:**
+
 ```typescript
 // Each client generates unique IDs without coordination
-const id = (await db.query("SELECT uuid_generate_v4()")).rows[0].uuid_generate_v4;
+const id =
+  (await db.query("SELECT uuid_generate_v4()")).rows[0].uuid_generate_v4;
 
 await db.query(
   "INSERT INTO events (id, type, data) VALUES ($1, $2, $3)",
-  [id, "user_action", data]
+  [id, "user_action", data],
 );
 
 // No ID conflicts when syncing!
@@ -191,6 +204,7 @@ await db.sync();
 ```
 
 **Security:**
+
 ```typescript
 // UUIDs are hard to guess (unlike sequential IDs)
 const resetToken = (
@@ -199,7 +213,7 @@ const resetToken = (
 
 await db.query(
   "INSERT INTO password_resets (token, user_id) VALUES ($1, $2)",
-  [resetToken, userId]
+  [resetToken, userId],
 );
 ```
 
@@ -214,6 +228,7 @@ Store and search vector embeddings for AI applications.
 ```typescript
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   pgliteExtensions: ["vector"],
   schemaSQL: [
     `CREATE TABLE documents (
@@ -222,12 +237,12 @@ const db = await Ominipg.connect({
       content TEXT NOT NULL,
       embedding VECTOR(384) -- 384-dimensional vector
     )`,
-    
+
     // Create index for fast similarity search
     `CREATE INDEX documents_embedding_idx 
      ON documents 
-     USING ivfflat (embedding vector_cosine_ops)`
-  ]
+     USING ivfflat (embedding vector_cosine_ops)`,
+  ],
 });
 ```
 
@@ -239,24 +254,26 @@ const db = await Ominipg.connect({
 // Vector as string
 await db.query(
   "INSERT INTO documents (title, content, embedding) VALUES ($1, $2, $3::vector)",
-  ["Hello World", "This is content", "[0.1, 0.2, 0.3, ...]"]
+  ["Hello World", "This is content", "[0.1, 0.2, 0.3, ...]"],
 );
 
 // Vector as array (converted to string)
 const embedding = [0.1, 0.2, 0.3]; // ... 384 dimensions
 await db.query(
   "INSERT INTO documents (title, embedding) VALUES ($1, $2::vector)",
-  ["Document", JSON.stringify(embedding)]
+  ["Document", JSON.stringify(embedding)],
 );
 ```
 
 #### Similarity Search
 
 **Cosine Distance (`<=>`)**:
+
 ```typescript
 const searchVector = "[0.1, 0.2, 0.3, ...]";
 
-const results = await db.query(`
+const results = await db.query(
+  `
   SELECT 
     title,
     embedding <=> $1::vector as distance
@@ -264,60 +281,74 @@ const results = await db.query(`
   WHERE embedding IS NOT NULL
   ORDER BY embedding <=> $1::vector
   LIMIT 5
-`, [searchVector]);
+`,
+  [searchVector],
+);
 
 // Smaller distance = more similar
-results.rows.forEach(row => {
+results.rows.forEach((row) => {
   console.log(`${row.title}: ${row.distance}`);
 });
 ```
 
 **Euclidean Distance (`<->`)**:
+
 ```typescript
-const results = await db.query(`
+const results = await db.query(
+  `
   SELECT title, embedding <-> $1::vector as distance
   FROM documents
   ORDER BY embedding <-> $1::vector
   LIMIT 5
-`, [searchVector]);
+`,
+  [searchVector],
+);
 ```
 
 **Inner Product (`<#>`)**:
+
 ```typescript
-const results = await db.query(`
+const results = await db.query(
+  `
   SELECT title, embedding <#> $1::vector as distance
   FROM documents
   ORDER BY embedding <#> $1::vector
   LIMIT 5
-`, [searchVector]);
+`,
+  [searchVector],
+);
 ```
 
 ### Use Cases
 
 **Semantic Search:**
+
 ```typescript
 // 1. Store document embeddings
 async function indexDocument(title: string, content: string) {
   // Get embedding from AI model (e.g., OpenAI)
   const embedding = await getEmbedding(content);
-  
+
   await db.query(
     "INSERT INTO documents (title, content, embedding) VALUES ($1, $2, $3::vector)",
-    [title, content, JSON.stringify(embedding)]
+    [title, content, JSON.stringify(embedding)],
   );
 }
 
 // 2. Search by meaning
 async function semanticSearch(query: string, limit = 5) {
   const queryEmbedding = await getEmbedding(query);
-  
-  const results = await db.query(`
+
+  const results = await db.query(
+    `
     SELECT title, content, embedding <=> $1::vector as score
     FROM documents
     ORDER BY embedding <=> $1::vector
     LIMIT $2
-  `, [JSON.stringify(queryEmbedding), limit]);
-  
+  `,
+    [JSON.stringify(queryEmbedding), limit],
+  );
+
   return results.rows;
 }
 
@@ -330,37 +361,45 @@ const results = await semanticSearch("How to use databases?");
 ```
 
 **Recommendation System:**
+
 ```typescript
 // Find similar products
 const product = await db.query(
   "SELECT embedding FROM products WHERE id = $1",
-  [productId]
+  [productId],
 );
 
-const similar = await db.query(`
+const similar = await db.query(
+  `
   SELECT id, name, embedding <=> $1::vector as similarity
   FROM products
   WHERE id != $2
   ORDER BY embedding <=> $1::vector
   LIMIT 10
-`, [product.rows[0].embedding, productId]);
+`,
+  [product.rows[0].embedding, productId],
+);
 ```
 
 **Image Search:**
+
 ```typescript
 // Store image embeddings
 await db.query(
   "INSERT INTO images (url, embedding) VALUES ($1, $2::vector)",
-  [imageUrl, JSON.stringify(imageEmbedding)]
+  [imageUrl, JSON.stringify(imageEmbedding)],
 );
 
 // Find similar images
-const similar = await db.query(`
+const similar = await db.query(
+  `
   SELECT url, embedding <=> $1::vector as distance
   FROM images
   ORDER BY embedding <=> $1::vector
   LIMIT 20
-`, [queryEmbedding]);
+`,
+  [queryEmbedding],
+);
 ```
 
 ---
@@ -374,6 +413,7 @@ Work with geographic data and spatial queries.
 ```typescript
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   pgliteExtensions: ["postgis"],
   schemaSQL: [
     `CREATE TABLE locations (
@@ -381,12 +421,12 @@ const db = await Ominipg.connect({
       name TEXT NOT NULL,
       position GEOMETRY(Point, 4326)
     )`,
-    
+
     // Spatial index
     `CREATE INDEX locations_position_idx 
      ON locations 
-     USING GIST (position)`
-  ]
+     USING GIST (position)`,
+  ],
 });
 ```
 
@@ -396,17 +436,21 @@ const db = await Ominipg.connect({
 
 ```typescript
 // Store latitude/longitude
-await db.query(`
+await db.query(
+  `
   INSERT INTO locations (name, position) 
   VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326))
-`, ["San Francisco", -122.4194, 37.7749]); // lng, lat
+`,
+  ["San Francisco", -122.4194, 37.7749],
+); // lng, lat
 ```
 
 #### Distance Queries
 
 ```typescript
 // Find nearby locations (within 10km)
-const results = await db.query(`
+const results = await db.query(
+  `
   SELECT 
     name,
     ST_Distance(
@@ -420,7 +464,9 @@ const results = await db.query(`
     10000 -- 10km in meters
   )
   ORDER BY distance_meters
-`, [longitude, latitude]);
+`,
+  [longitude, latitude],
+);
 ```
 
 #### Area Queries
@@ -440,9 +486,11 @@ await db.query(`
 ### Use Cases
 
 **Store Locator:**
+
 ```typescript
 async function findNearbyStores(lat: number, lng: number, radiusKm: number) {
-  return await db.query(`
+  return await db.query(
+    `
     SELECT 
       id,
       name,
@@ -458,14 +506,18 @@ async function findNearbyStores(lat: number, lng: number, radiusKm: number) {
     )
     ORDER BY distance_km
     LIMIT 10
-  `, [lng, lat, radiusKm]);
+  `,
+    [lng, lat, radiusKm],
+  );
 }
 ```
 
 **Delivery Zones:**
+
 ```typescript
 async function isInDeliveryZone(lat: number, lng: number) {
-  const result = await db.query(`
+  const result = await db.query(
+    `
     SELECT EXISTS(
       SELECT 1 FROM delivery_zones
       WHERE ST_Within(
@@ -473,8 +525,10 @@ async function isInDeliveryZone(lat: number, lng: number) {
         zone_polygon
       )
     ) as in_zone
-  `, [lng, lat]);
-  
+  `,
+    [lng, lat],
+  );
+
   return result.rows[0].in_zone;
 }
 ```
@@ -507,13 +561,13 @@ console.log({ hasUUID, hasVector });
 class FeatureFlags {
   hasUUID = false;
   hasVector = false;
-  
+
   async detect(db: Ominipg) {
     try {
       await db.query("SELECT uuid_generate_v4()");
       this.hasUUID = true;
     } catch {}
-    
+
     try {
       await db.query("SELECT '[1,2,3]'::vector");
       this.hasVector = true;
@@ -541,6 +595,7 @@ if (features.hasUUID) {
 **Problem:** Extension functions don't work
 
 **Solutions:**
+
 ```typescript
 // 1. Verify PGlite is being used
 const info = await db.getDiagnosticInfo();
@@ -549,6 +604,7 @@ console.log(info.mainDatabase.type); // Should be "pglite"
 // 2. Check extension is in the list
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   pgliteExtensions: ["uuid_ossp"], // ✅ Correct
   // pgliteExtensions: ["uuid-ossp"], // ❌ Wrong name
 });
@@ -567,18 +623,19 @@ try {
 **Problem:** `Vector dimension mismatch`
 
 **Solution:** Ensure vector dimensions match schema:
+
 ```typescript
 // Schema declares 384 dimensions
-`CREATE TABLE docs (embedding VECTOR(384))`
+`CREATE TABLE docs (embedding VECTOR(384))`;
 
 // ❌ Wrong: 3 dimensions
 await db.query("INSERT INTO docs (embedding) VALUES ('[1,2,3]'::vector)");
 
 // ✅ Correct: 384 dimensions
 const embedding = new Array(384).fill(0);
-await db.query("INSERT INTO docs (embedding) VALUES ($1::vector)", 
-  [JSON.stringify(embedding)]
-);
+await db.query("INSERT INTO docs (embedding) VALUES ($1::vector)", [
+  JSON.stringify(embedding),
+]);
 ```
 
 ### Performance Issues
@@ -586,6 +643,7 @@ await db.query("INSERT INTO docs (embedding) VALUES ($1::vector)",
 **Problem:** Slow vector search
 
 **Solutions:**
+
 ```typescript
 // 1. Create index
 await db.query(`
@@ -601,11 +659,14 @@ await db.query(`
 // Inner product: <#>
 
 // 3. Limit results
-await db.query(`
+await db.query(
+  `
   SELECT * FROM documents
   ORDER BY embedding <=> $1::vector
   LIMIT 10 -- Don't fetch all results
-`, [queryVector]);
+`,
+  [queryVector],
+);
 ```
 
 ---
@@ -614,10 +675,12 @@ await db.query(`
 
 ```typescript
 import { Ominipg } from "jsr:@oxian/ominipg";
+import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
 // Load multiple extensions
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   pgliteExtensions: ["uuid_ossp", "vector"],
   schemaSQL: [
     `CREATE TABLE products (
@@ -628,30 +691,34 @@ const db = await Ominipg.connect({
       embedding VECTOR(384),
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`,
-    
+
     `CREATE INDEX products_embedding_idx 
      ON products 
-     USING ivfflat (embedding vector_cosine_ops)`
-  ]
+     USING ivfflat (embedding vector_cosine_ops)`,
+  ],
 });
 
 // Insert with UUID and vector
 const embedding = new Array(384).fill(0).map(() => Math.random());
 
-await db.query(`
+await db.query(
+  `
   INSERT INTO products (name, description, price, embedding)
   VALUES ($1, $2, $3, $4::vector)
-`, [
-  "Laptop",
-  "High-performance laptop for developers",
-  1299.99,
-  JSON.stringify(embedding)
-]);
+`,
+  [
+    "Laptop",
+    "High-performance laptop for developers",
+    1299.99,
+    JSON.stringify(embedding),
+  ],
+);
 
 // Search similar products
 const queryEmbedding = new Array(384).fill(0).map(() => Math.random());
 
-const similar = await db.query(`
+const similar = await db.query(
+  `
   SELECT 
     id,
     name,
@@ -661,7 +728,9 @@ const similar = await db.query(`
   WHERE embedding IS NOT NULL
   ORDER BY embedding <=> $1::vector
   LIMIT 5
-`, [JSON.stringify(queryEmbedding)]);
+`,
+  [JSON.stringify(queryEmbedding)],
+);
 
 console.log("Similar products:", similar.rows);
 
@@ -677,4 +746,3 @@ await db.close();
 - [PostGIS Documentation](https://postgis.net/)
 - [API Reference](./API.md)
 - [Examples](../examples/pglite-extensions.ts)
-

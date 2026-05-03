@@ -1,4 +1,5 @@
 import { Ominipg, withDrizzle } from "../src/client/index.ts";
+import { createPGliteProvider } from "../src/providers/pglite.ts";
 import { drizzle } from "npm:drizzle-orm/pg-proxy";
 import { integer, pgTable, serial, varchar } from "npm:drizzle-orm/pg-core";
 import { assertEquals, assertExists } from "jsr:@std/assert";
@@ -22,6 +23,7 @@ Deno.test("withDrizzle - explicit drizzle factory", async () => {
   // 1. Connect to Ominipg
   const ominipg = await Ominipg.connect({
     url: ":memory:",
+    pgliteProvider: createPGliteProvider(),
     schemaSQL: schemaDDL,
     pgliteExtensions: ["uuid_ossp", "vector", "pg_trgm"],
     logMetrics: true,

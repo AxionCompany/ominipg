@@ -1,4 +1,5 @@
 import { Ominipg } from "../src/client/index.ts";
+import { createPgProvider } from "../src/providers/pg.ts";
 import { assertEquals } from "jsr:@std/assert@1.0.13";
 
 const PG_URL = Deno.env.get("DB_URL_PG"); // postgres:// URL
@@ -11,7 +12,11 @@ if (!PG_URL) {
   });
 } else {
   Deno.test("Worker Postgres mode without sync: basic query and diag", async () => {
-    const db = await Ominipg.connect({ url: PG_URL, useWorker: true });
+    const db = await Ominipg.connect({
+      url: PG_URL,
+      pgProvider: createPgProvider(),
+      useWorker: true,
+    });
 
     const { rows } = await db.query("SELECT 1 as x");
     assertEquals(rows.length, 1);

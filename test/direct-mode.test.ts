@@ -1,4 +1,5 @@
 import { Ominipg } from "../src/client/index.ts";
+import { createPgProvider } from "../src/providers/pg.ts";
 import { assertEquals, assertRejects } from "jsr:@std/assert@1.0.13";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,6 +21,7 @@ if (!PG_URL) {
     ];
     const db = await Ominipg.connect({
       url: PG_URL,
+      pgProvider: createPgProvider(),
       logMetrics: true,
       schemaSQL: schemaDDL,
     });

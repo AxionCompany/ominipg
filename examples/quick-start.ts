@@ -1,10 +1,12 @@
 /**
  * Quick Start Example - Try Ominipg in 30 seconds!
  *
- * Run this with: deno run --allow-all https://deno.land/x/ominipg/examples/quick-start.ts
+ * Run this with:
+ * deno run --allow-all --config deno.test.json examples/quick-start.ts
  */
 
 import { Ominipg } from "../src/client/index.ts";
+import { createPGliteProvider } from "../src/providers/pglite.ts";
 
 console.log("🐘 Ominipg Quick Start Demo\n");
 
@@ -12,6 +14,7 @@ console.log("🐘 Ominipg Quick Start Demo\n");
 console.log("📖 Creating in-memory database...");
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   schemaSQL: [
     `CREATE TABLE users (
       id SERIAL PRIMARY KEY,

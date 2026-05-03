@@ -1,12 +1,19 @@
 {
   "name": "@oxian/ominipg",
   "description": "Ominipg is the flexible, all-in-one toolkit for PostgreSQL in Deno.",
-  "version": "0.5.10",
+  "version": "0.6.0",
   "author": "Ominipg",
   "license": "MIT",
   "exports": {
     ".": "./src/client/index.ts",
-    "./crud": "./src/client/crud/index.ts"
+    "./crud": "./src/client/crud/index.ts",
+    "./pglite": "./src/providers/pglite.ts",
+    "./pg": "./src/providers/pg.ts"
+  },
+  "tasks": {
+    "build:npm": "deno run -A scripts/build_npm.ts",
+    "test:deno": "deno test --allow-all --config deno.test.json",
+    "test:npm-node": "deno task build:npm && deno run -A scripts/test_npm_node.ts"
   },
   "test": {
     "include": [
@@ -16,9 +23,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/AxionCompany/ominipg"
-  },
-  "imports": {
-    "pg": "npm:pg@8.16.3"
   },
   "lock": false
 }

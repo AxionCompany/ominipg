@@ -1,6 +1,7 @@
 # Sync Guide
 
-Build local-first applications with automatic synchronization between local PGlite and remote PostgreSQL databases.
+Build local-first applications with automatic synchronization between local
+PGlite and remote PostgreSQL databases.
 
 ---
 
@@ -19,7 +20,8 @@ Build local-first applications with automatic synchronization between local PGli
 
 ## What is Local-First?
 
-**Local-first** applications store data locally on the user's device and sync with a remote server when available. This provides:
+**Local-first** applications store data locally on the user's device and sync
+with a remote server when available. This provides:
 
 - ✅ **Offline capability** - App works without internet connection
 - ✅ **Instant responsiveness** - No waiting for network requests
@@ -27,6 +29,7 @@ Build local-first applications with automatic synchronization between local PGli
 - ✅ **Resilience** - App continues working during network issues
 
 **Ominipg makes local-first easy** by providing automatic sync between:
+
 - **Local database** (PGlite in-memory or persistent)
 - **Remote database** (PostgreSQL server)
 
@@ -93,14 +96,19 @@ To enable sync, provide both `url` (local) and `syncUrl` (remote):
 
 ```typescript
 import { Ominipg } from "jsr:@oxian/ominipg";
+import { createPgProvider } from "jsr:@oxian/ominipg/pg";
+import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
 const db = await Ominipg.connect({
   // Local database (in-memory)
   url: ":memory:",
-  
+
   // Remote database (PostgreSQL)
   syncUrl: "postgresql://user:password@host:5432/database",
-  
+
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
+
   // Schema must exist on both databases
   schemaSQL: [
     `CREATE TABLE IF NOT EXISTS users (
@@ -108,8 +116,8 @@ const db = await Ominipg.connect({
       name TEXT NOT NULL,
       email TEXT UNIQUE,
       created_at TIMESTAMPTZ DEFAULT NOW()
-    )`
-  ]
+    )`,
+  ],
 });
 ```
 
@@ -122,7 +130,9 @@ const db = await Ominipg.connect({
   // Use a file path instead of :memory:
   url: "./local.db",
   syncUrl: "postgresql://...",
-  schemaSQL: [/* ... */]
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
+  schemaSQL: [/* ... */],
 });
 ```
 
@@ -135,11 +145,13 @@ const db = await Ominipg.connect({
 const db = await Ominipg.connect({
   url: ":memory:",
   syncUrl: "postgresql://...",
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
   schemaSQL: [
     // These DDL statements run on both local and remote
     `CREATE TABLE IF NOT EXISTS users (...)`,
-    `CREATE TABLE IF NOT EXISTS posts (...)`
-  ]
+    `CREATE TABLE IF NOT EXISTS posts (...)`,
+  ],
 });
 
 // Option 2: Ensure schema exists on remote first
@@ -147,10 +159,12 @@ const db = await Ominipg.connect({
 const db = await Ominipg.connect({
   url: ":memory:",
   syncUrl: "postgresql://...", // Schema already exists here
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
   schemaSQL: [
     // Only creates schema locally
-    `CREATE TABLE IF NOT EXISTS users (...)`
-  ]
+    `CREATE TABLE IF NOT EXISTS users (...)`,
+  ],
 });
 ```
 
@@ -166,12 +180,12 @@ Call `sync()` to push local changes to remote:
 // Make local changes
 await db.query("INSERT INTO users (name, email) VALUES ($1, $2)", [
   "Alice",
-  "alice@example.com"
+  "alice@example.com",
 ]);
 
 await db.query("INSERT INTO users (name, email) VALUES ($1, $2)", [
   "Bob",
-  "bob@example.com"
+  "bob@example.com",
 ]);
 
 // Push to remote
@@ -265,10 +279,12 @@ async function handleSyncClick() {
 ```
 
 **Pros:**
+
 - User has full control
 - No surprise network usage
 
 **Cons:**
+
 - User might forget to sync
 - Risk of data loss
 
@@ -280,11 +296,11 @@ Sync automatically in the background:
 class SyncManager {
   private db: Ominipg;
   private intervalId?: number;
-  
+
   constructor(db: Ominipg) {
     this.db = db;
   }
-  
+
   start(intervalMs: number = 5 * 60 * 1000) {
     this.intervalId = setInterval(async () => {
       try {
@@ -294,13 +310,13 @@ class SyncManager {
       }
     }, intervalMs);
   }
-  
+
   stop() {
     if (this.intervalId) {
       clearInterval(this.intervalId);
     }
   }
-  
+
   async syncNow() {
     return await this.db.sync();
   }
@@ -318,10 +334,12 @@ syncManager.stop();
 ```
 
 **Pros:**
+
 - Always in sync
 - No user intervention needed
 
 **Cons:**
+
 - Network usage
 - Battery drain
 
@@ -334,30 +352,29 @@ class SmartSyncManager {
   private db: Ominipg;
   private pendingChanges = 0;
   private lastSync = Date.now();
-  
+
   constructor(db: Ominipg) {
     this.db = db;
     this.startMonitoring();
   }
-  
+
   private startMonitoring() {
     // Monitor local changes
     setInterval(() => {
       this.considerSync();
     }, 30 * 1000); // Check every 30 seconds
   }
-  
+
   onLocalChange() {
     this.pendingChanges++;
     this.considerSync();
   }
-  
+
   private async considerSync() {
     const timeSinceLastSync = Date.now() - this.lastSync;
-    const shouldSync = 
-      this.pendingChanges >= 10 || // At least 10 changes
+    const shouldSync = this.pendingChanges >= 10 || // At least 10 changes
       (this.pendingChanges > 0 && timeSinceLastSync > 5 * 60 * 1000); // Or 5 min passed
-    
+
     if (shouldSync && navigator.onLine) {
       try {
         const result = await this.db.sync();
@@ -380,10 +397,12 @@ smartSync.onLocalChange();
 ```
 
 **Pros:**
+
 - Balances freshness and efficiency
 - Adapts to usage patterns
 
 **Cons:**
+
 - More complex implementation
 
 ### Strategy 4: Critical-First Sync
@@ -399,7 +418,7 @@ async function syncCriticalData() {
     SET priority = 1 
     WHERE table_name IN ('orders', 'payments')
   `);
-  
+
   await db.sync();
 }
 
@@ -422,6 +441,7 @@ setTimeout(syncAll, 60000);
 ### Current Behavior
 
 **Ominipg currently uses "last write wins" strategy:**
+
 - Remote changes overwrite local changes
 - No automatic conflict detection
 
@@ -438,20 +458,23 @@ const schemaSQL = [
     name TEXT,
     version INTEGER DEFAULT 1,
     updated_at TIMESTAMPTZ DEFAULT NOW()
-  )`
+  )`,
 ];
 
 // On update, increment version
-await db.query(`
+await db.query(
+  `
   UPDATE users 
   SET name = $1, version = version + 1, updated_at = NOW()
   WHERE id = $2
-`, [newName, userId]);
+`,
+  [newName, userId],
+);
 
 // Before sync, check remote version
 const remote = await remoteDb.query(
   "SELECT version FROM users WHERE id = $1",
-  [userId]
+  [userId],
 );
 
 if (remote.rows[0].version > localVersion) {
@@ -466,19 +489,22 @@ if (remote.rows[0].version > localVersion) {
 async function updateWithOptimisticLock(
   id: string,
   currentVersion: number,
-  newData: object
+  newData: object,
 ) {
-  const result = await db.query(`
+  const result = await db.query(
+    `
     UPDATE users 
     SET name = $1, version = version + 1
     WHERE id = $2 AND version = $3
     RETURNING *
-  `, [newData.name, id, currentVersion]);
-  
+  `,
+    [newData.name, id, currentVersion],
+  );
+
   if (result.rows.length === 0) {
     throw new Error("Update conflict: Record was modified");
   }
-  
+
   return result.rows[0];
 }
 
@@ -502,7 +528,7 @@ For append-only data (like logs, events):
 
 await db.query("INSERT INTO events (type, data) VALUES ($1, $2)", [
   "user_action",
-  JSON.stringify(data)
+  JSON.stringify(data),
 ]);
 
 // Sync safely - inserts don't conflict
@@ -534,7 +560,7 @@ async function syncWithRetry(maxRetries = 3) {
       console.error(`Sync attempt ${i + 1} failed:`, error);
       if (i === maxRetries - 1) throw error;
       // Exponential backoff
-      await new Promise(resolve => 
+      await new Promise((resolve) =>
         setTimeout(resolve, Math.pow(2, i) * 1000)
       );
     }
@@ -576,10 +602,10 @@ const schemaSQL = [
     version INTEGER PRIMARY KEY,
     applied_at TIMESTAMPTZ DEFAULT NOW()
   )`,
-  
+
   // Version 1 tables
   `CREATE TABLE IF NOT EXISTS users (...)`,
-  
+
   // Version 2 migration
   `DO $$ 
   BEGIN
@@ -587,7 +613,7 @@ const schemaSQL = [
       ALTER TABLE users ADD COLUMN last_login TIMESTAMPTZ;
       INSERT INTO _schema_version (version) VALUES (2);
     END IF;
-  END $$`
+  END $$`,
 ];
 ```
 
@@ -652,7 +678,7 @@ const users = await remoteData.json();
 for (const user of users) {
   await db.query(
     "INSERT INTO users (id, name, email) VALUES ($1, $2, $3)",
-    [user.id, user.name, user.email]
+    [user.id, user.name, user.email],
   );
 }
 
@@ -668,7 +694,7 @@ const schemaSQL = [
     id SERIAL PRIMARY KEY,
     name TEXT,
     sync_enabled BOOLEAN DEFAULT TRUE
-  )`
+  )`,
 ];
 
 // Only sync enabled records (manual implementation)
@@ -688,11 +714,15 @@ for (const record of changedRecords.rows) {
 
 ```typescript
 import { Ominipg } from "jsr:@oxian/ominipg";
+import { createPgProvider } from "jsr:@oxian/ominipg/pg";
+import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
 // 1. Setup with sync
 const db = await Ominipg.connect({
   url: ":memory:",
   syncUrl: "postgresql://user:pass@host:5432/db",
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
   schemaSQL: [
     `CREATE TABLE IF NOT EXISTS todos (
       id SERIAL PRIMARY KEY,
@@ -700,8 +730,8 @@ const db = await Ominipg.connect({
       completed BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
-    )`
-  ]
+    )`,
+  ],
 });
 
 // 2. Setup sync events
@@ -712,17 +742,17 @@ db.on("error", (e) => console.error("❌ Error:", e));
 // 3. Work offline - all local
 await db.query(
   "INSERT INTO todos (title) VALUES ($1)",
-  ["Buy groceries"]
+  ["Buy groceries"],
 );
 
 await db.query(
   "INSERT INTO todos (title) VALUES ($1)",
-  ["Write documentation"]
+  ["Write documentation"],
 );
 
 await db.query(
   "UPDATE todos SET completed = TRUE WHERE id = $1",
-  [1]
+  [1],
 );
 
 // 4. Sync when ready
@@ -750,5 +780,3 @@ clearInterval(syncInterval);
 - [API Reference](./API.md)
 - [Architecture](./ARCHITECTURE.md)
 - [Examples](../examples)
-
-

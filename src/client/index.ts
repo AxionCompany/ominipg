@@ -1,33 +1,33 @@
 /**
  * @module
- * 
+ *
  * Ominipg - The flexible, all-in-one toolkit for PostgreSQL in Deno.
- * 
+ *
  * This module provides the main Ominipg class for connecting to PostgreSQL databases
  * (either in-memory via PGlite, persistent file-based, or direct PostgreSQL connections),
  * along with utilities for integrating with Drizzle ORM.
- * 
+ *
  * @example
  * ```typescript
  * import { Ominipg } from "jsr:@oxian/ominipg";
- * 
+ *
  * // Connect to an in-memory database
  * const db = await Ominipg.connect({
  *   url: ":memory:",
  *   schemaSQL: ["CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)"]
  * });
- * 
+ *
  * // Execute queries
  * await db.query("INSERT INTO users (name) VALUES ($1)", ["Alice"]);
  * const result = await db.query("SELECT * FROM users");
- * 
+ *
  * await db.close();
  * ```
- * 
+ *
  * @example
  * ```typescript
  * import { Ominipg, defineSchema } from "jsr:@oxian/ominipg";
- * 
+ *
  * // Connect with CRUD API
  * const schemas = defineSchema({
  *   users: {
@@ -39,7 +39,7 @@
  *     keys: [{ property: "id" }]
  *   }
  * });
- * 
+ *
  * const db = await Ominipg.connect({ url: ":memory:", schemas });
  * const user = await db.crud.users.create({ id: "1", name: "Alice" });
  * ```
@@ -47,56 +47,27 @@
 
 import { TypedEmitter } from "npm:tiny-typed-emitter@2.1.0";
 import type { OminipgClientEvents, OminipgConnectionOptions } from "./types.ts";
-// Type-only import for pg to avoid loading it unless used by consumers at runtime
-// This allows full typing in direct mode without bundling the module unnecessarily in Deno.
-import type {
-  Pool as PgPool,
-  PoolClient as _PgPoolClient,
-  QueryResult,
-} from "pg";
-import { Pool } from "pg";
+import {
+  createDatabaseWorker,
+  getRssMb,
+  type RuntimeWorker,
+} from "../runtime/mod.ts";
+import { InProcessWorker } from "../worker/in_process.ts";
 import type {
   CloseMsg,
   DiagnosticMsg,
   ExecMsg,
   InitMsg,
+  PgPool,
+  PgProvider,
   ResponseMsg,
   SyncMsg,
   SyncSeqMsg,
   WorkerMsg,
 } from "../shared/types.ts";
 
-import type {
-  CrudApi,
-  CrudSchemas,
-} from "./crud/types.ts";
+import type { CrudApi, CrudSchemas } from "./crud/types.ts";
 import { createCrudApi } from "./crud/index.ts";
-
-
-// Lightweight, best-effort RSS reader for metrics logging
-function getRssMb(): number | null {
-  try {
-    if (Deno.build.os === "linux") {
-      const statm = Deno.readTextFileSync("/proc/self/statm").split(" ");
-      const pages = Number(statm[1]);
-      const bytes = pages * 4096;
-      return Math.round(bytes / 1024 / 1024);
-    }
-    if (Deno.build.os === "darwin") {
-      const cmd = new Deno.Command("ps", {
-        args: ["-o", "rss=", "-p", String(Deno.pid)],
-      });
-      const out = cmd.outputSync();
-      const text = new TextDecoder().decode(out.stdout).trim();
-      const kb = parseInt(text || "0", 10);
-      if (!Number.isFinite(kb) || kb <= 0) return null;
-      return Math.round(kb / 1024);
-    }
-    return null;
-  } catch (_e) {
-    return null;
-  }
-}
 
 class RequestManager {
   private _id = 0;
@@ -110,7 +81,7 @@ class RequestManager {
   >();
 
   constructor(
-    private readonly worker: Worker,
+    private readonly worker: RuntimeWorker,
     private readonly emitter: TypedEmitter<OminipgClientEvents>,
   ) {
     this.worker.addEventListener("message", this.handleMessage.bind(this));
@@ -174,14 +145,82 @@ class RequestManager {
   }
 }
 
+function toWorkerPGliteProvider(
+  provider: OminipgConnectionOptions["pgliteProvider"],
+) {
+  if (!provider) return undefined;
+  if (!provider.moduleSpecifier) {
+    throw new Error(
+      "Worker-mode PGlite requires pgliteProvider.moduleSpecifier. Custom callback-only providers are supported with useWorker: false.",
+    );
+  }
+  return {
+    moduleSpecifier: provider.moduleSpecifier,
+    extensionSpecifiers: provider.extensionSpecifiers,
+  };
+}
+
+function toWorkerPgProvider(provider: PgProvider | undefined) {
+  if (!provider) return undefined;
+  if (!provider.moduleSpecifier) {
+    throw new Error(
+      "Worker-mode PostgreSQL requires pgProvider.moduleSpecifier. Custom callback-only providers are supported with useWorker: false.",
+    );
+  }
+  return {
+    moduleSpecifier: provider.moduleSpecifier,
+    logicalReplicationModuleSpecifier:
+      provider.logicalReplicationModuleSpecifier,
+  };
+}
+
+function directPgLoadError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `Failed to load PostgreSQL provider from "pg": ${message}\n\n` +
+      `For Deno, add pg to your deno.json import map:\n` +
+      `{\n` +
+      `  "imports": {\n` +
+      `    "pg": "npm:pg@8.16.3"\n` +
+      `  }\n` +
+      `}\n\n` +
+      `For Node.js, install the optional peer dependency: npm install pg`,
+  );
+}
+
+async function createDirectPool(
+  url: string,
+  provider: PgProvider | undefined,
+): Promise<PgPool> {
+  try {
+    if (provider?.loadPg) {
+      const pg = await provider.loadPg();
+      return new pg.Pool({ connectionString: url, max: 5 });
+    }
+    if (provider?.moduleSpecifier) {
+      const pg = await import(provider.moduleSpecifier) as {
+        Pool: new (
+          options: { connectionString: string; max?: number },
+        ) => PgPool;
+      };
+      return new pg.Pool({ connectionString: url, max: 5 });
+    }
+  } catch (error) {
+    throw directPgLoadError(error);
+  }
+  throw new Error(
+    "Direct PostgreSQL connections require a pgProvider. Import createPgProvider from '@oxian/ominipg/pg' (or 'jsr:@oxian/ominipg/pg' in Deno) and pass it to Ominipg.connect().",
+  );
+}
+
 /**
  * Ominipg instance with CRUD API attached.
- * 
+ *
  * This type represents an Ominipg instance that has been connected with schemas,
  * providing type-safe CRUD operations via the `crud` property.
- * 
+ *
  * @typeParam Schemas - The schema definitions used to create the CRUD API
- * 
+ *
  * @example
  * ```typescript
  * const schemas = defineSchema({ users: { ... } });
@@ -196,17 +235,17 @@ export type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
 
 /**
  * Main Ominipg database client class.
- * 
+ *
  * Provides a unified interface for working with PostgreSQL databases in Deno,
  * supporting multiple connection modes:
  * - **In-memory**: Using PGlite (PostgreSQL in WASM)
  * - **Persistent**: File-based PGlite storage
  * - **Direct**: Direct connection to PostgreSQL server
  * - **Worker**: Database operations in isolated Web Worker
- * 
+ *
  * The class extends TypedEmitter to provide event-based notifications for
  * connection, sync, and error events.
- * 
+ *
  * @example
  * ```typescript
  * // Basic usage
@@ -214,7 +253,7 @@ export type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
  * await db.query("SELECT 1");
  * await db.close();
  * ```
- * 
+ *
  * @example
  * ```typescript
  * // With sync
@@ -228,14 +267,14 @@ export type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
  */
 export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   private readonly mode: "worker" | "direct";
-  private readonly worker?: Worker;
+  private readonly worker?: RuntimeWorker;
   private readonly requests?: RequestManager;
   private readonly pool?: PgPool; // pg.Pool when in direct mode
   public crud?: unknown;
 
   private constructor(
     mode: "worker" | "direct",
-    worker?: Worker,
+    worker?: RuntimeWorker,
     pool?: PgPool,
   ) {
     super();
@@ -247,19 +286,19 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
   /**
    * Connects to a PostgreSQL database and returns an Ominipg instance.
-   * 
+   *
    * This is the main entry point for creating database connections. The method
    * automatically selects the appropriate connection mode based on the provided options.
-   * 
+   *
    * @param options - Connection configuration options
    * @returns Promise resolving to an Ominipg instance (with CRUD API if schemas provided)
-   * 
+   *
    * @example
    * ```typescript
    * // In-memory database
    * const db = await Ominipg.connect({ url: ":memory:" });
    * ```
-   * 
+   *
    * @example
    * ```typescript
    * // With CRUD schemas
@@ -267,7 +306,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * const db = await Ominipg.connect({ url: ":memory:", schemas });
    * // db.crud.users is now available
    * ```
-   * 
+   *
    * @example
    * ```typescript
    * // Direct PostgreSQL connection
@@ -290,13 +329,13 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     const isPg = url.startsWith("postgres://") ||
       url.startsWith("postgresql://");
     const syncDisabled = !options.syncUrl;
-    const useWorker = options.useWorker ?? !(isPg && syncDisabled);
+    const useWorker = options.useWorker ?? !!options.syncUrl;
     const metricsEnabled = !!options.logMetrics;
 
     if (!useWorker && isPg && syncDisabled) {
       const before = metricsEnabled ? getRssMb() : null;
       console.log("Using direct Postgres mode");
-      const pool = new Pool({ connectionString: url, max: 5 });
+      const pool = await createDirectPool(url, options.pgProvider);
       const client = await pool.connect();
       try {
         await client.query("SELECT 1");
@@ -305,7 +344,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
             await client.query(stmt);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            console.warn(`Direct mode DDL execution failed (this may be ok):`, message);
+            console.warn(
+              `Direct mode DDL execution failed (this may be ok):`,
+              message,
+            );
           }
         }
       } finally {
@@ -334,10 +376,13 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     }
 
     const beforeWorker = metricsEnabled ? getRssMb() : null;
-    const worker = new Worker(
-      new URL(`${(() => "../worker/index.ts")()}`, import.meta.url).href,
-      { type: "module" },
-    );
+    const worker = useWorker
+      ? await createDatabaseWorker(
+        import.meta.url,
+        "../worker/index.ts",
+        "../worker/index.node.js",
+      )
+      : new InProcessWorker();
     if (metricsEnabled) {
       const afterWorker = getRssMb();
       if (afterWorker != null && beforeWorker != null) {
@@ -354,6 +399,12 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     const initMsg = {
       type: "init" as const,
       ...initOptions,
+      pgliteProvider: useWorker
+        ? toWorkerPGliteProvider(options.pgliteProvider)
+        : options.pgliteProvider,
+      pgProvider: useWorker
+        ? toWorkerPgProvider(options.pgProvider)
+        : options.pgProvider,
       url,
     };
 
@@ -383,19 +434,19 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   /**
    * Executes a raw SQL query. This is the core method that can be used
    * directly or wrapped by ORMs like Drizzle.
-   * 
+   *
    * @typeParam TRow - The shape of each row in the result set
    * @param sql - SQL query string with optional placeholders ($1, $2, etc.)
    * @param params - Optional array of parameters to bind to placeholders
    * @returns Promise resolving to query result with rows array
-   * 
+   *
    * @example
    * ```typescript
    * // Simple query
    * const result = await db.query("SELECT * FROM users");
    * console.log(result.rows);
    * ```
-   * 
+   *
    * @example
    * ```typescript
    * // Parameterized query
@@ -404,7 +455,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    *   [18]
    * );
    * ```
-   * 
+   *
    * @example
    * ```typescript
    * // Typed result
@@ -418,7 +469,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     if (this.mode === "direct") {
       const client = await this.pool!.connect();
       try {
-        const result: QueryResult = await client.query(sql, params ?? []);
+        const result = await client.query(sql, params ?? []);
         return { rows: result.rows as unknown as TRow[] };
       } finally {
         client.release();
@@ -430,9 +481,9 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
   /**
    * Executes a raw SQL query (deprecated alias for query).
-   * 
+   *
    * @deprecated Use {@link Ominipg.query} instead. This method is kept for backward compatibility.
-   * 
+   *
    * @typeParam TRow - The shape of each row in the result set
    * @param sql - SQL query string with optional placeholders
    * @param params - Optional array of parameters
@@ -446,26 +497,26 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
   /**
    * Pushes local changes to the remote database.
-   * 
+   *
    * This method synchronizes INSERT, UPDATE, and DELETE operations from the local
    * database (PGlite) to the remote PostgreSQL database specified in `syncUrl`.
-   * 
+   *
    * **Note:** Sync is only available in worker mode with a `syncUrl` configured.
    * Direct PostgreSQL connections do not support sync.
-   * 
+   *
    * @returns Promise resolving to sync result with count of pushed changes
    * @throws Error if called in direct mode or without syncUrl configured
-   * 
+   *
    * @example
    * ```typescript
    * const db = await Ominipg.connect({
    *   url: ":memory:",
    *   syncUrl: "postgresql://user:pass@host:5432/db"
    * });
-   * 
+   *
    * // Make local changes
    * await db.query("INSERT INTO users (name) VALUES ($1)", ["Alice"]);
-   * 
+   *
    * // Sync to remote
    * const result = await db.sync();
    * console.log(`Pushed ${result.pushed} changes`);
@@ -487,22 +538,22 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
   /**
    * Synchronizes sequence values from the remote database.
-   * 
+   *
    * This ensures that auto-increment sequences (SERIAL columns) in the local
    * database are synchronized with the remote database to prevent ID conflicts.
-   * 
+   *
    * **Note:** Only available in worker mode with sync enabled.
-   * 
+   *
    * @returns Promise resolving to sync result with count of synced sequences
    * @throws Error if called in direct mode or without syncUrl configured
-   * 
+   *
    * @example
    * ```typescript
    * const db = await Ominipg.connect({
    *   url: ":memory:",
    *   syncUrl: "postgresql://user:pass@host:5432/db"
    * });
-   * 
+   *
    * // Sync sequences before inserting new records
    * await db.syncSequences();
    * await db.query("INSERT INTO users (name) VALUES ($1)", ["Alice"]);
@@ -518,12 +569,12 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
   /**
    * Retrieves diagnostic information about the database connection state.
-   * 
+   *
    * Returns information about the database type, sync configuration, and
    * tracked tables. Useful for debugging and monitoring.
-   * 
+   *
    * @returns Promise resolving to diagnostic information object
-   * 
+   *
    * @example
    * ```typescript
    * const info = await db.getDiagnosticInfo();
@@ -547,13 +598,13 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
   /**
    * Closes the database connection and cleans up resources.
-   * 
+   *
    * In worker mode, this terminates the worker thread. In direct mode,
    * this closes the PostgreSQL connection pool. Always call this method
    * when done with the database to free resources.
-   * 
+   *
    * @returns Promise that resolves when cleanup is complete
-   * 
+   *
    * @example
    * ```typescript
    * const db = await Ominipg.connect({ url: ":memory:" });
@@ -569,7 +620,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     }
     const message: Omit<CloseMsg, "reqId"> = { type: "close" };
     this.requests!.post(message);
-    this.worker!.terminate();
+    await this.worker!.terminate();
     this.emit("close");
   }
 
@@ -589,10 +640,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 /**
  * Type representing the additional methods added to a Drizzle instance
  * when wrapped with {@link withDrizzle}.
- * 
+ *
  * This mixin provides access to Ominipg-specific functionality (sync, diagnostics)
  * while maintaining full Drizzle ORM compatibility.
- * 
+ *
  * @example
  * ```typescript
  * const db = await withDrizzle(ominipg, drizzle, schema);
@@ -620,18 +671,9 @@ export type OminipgDrizzleMixin = {
   _ominipg: Ominipg;
 };
 
-export {
-  defineSchema,
-} from "./crud/index.ts";
-export type {
-  CrudApi,
-  CrudSchemas,
-  JsonSchema,
-} from "./crud/index.ts";
-export type {
-  OminipgConnectionOptions,
-  OminipgClientEvents,
-} from "./types.ts";
+export { defineSchema } from "./crud/index.ts";
+export type { CrudApi, CrudSchemas, JsonSchema } from "./crud/index.ts";
+export type { OminipgClientEvents, OminipgConnectionOptions } from "./types.ts";
 
 /**
  * Creates a Drizzle ORM adapter for an Ominipg instance.

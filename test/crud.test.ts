@@ -1,4 +1,5 @@
 import { defineSchema, Ominipg } from "../src/client/index.ts";
+import { createPGliteProvider } from "../src/providers/pglite.ts";
 import {
   assertEquals,
   assertExists,
@@ -124,6 +125,7 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
     url: ":memory:",
     schemaSQL,
     schemas,
+    pgliteProvider: createPGliteProvider(),
     pgliteConfig: {
       initialMemory: 128 * 1024 * 1024,
     },
@@ -260,7 +262,7 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
     }],
     limit: 1,
     skip: 1,
-  })
+  });
   assertEquals(pagedPosts.length, 1);
   assertEquals(pagedPosts[0].title, "Hello");
 
@@ -297,7 +299,7 @@ Deno.test("CRUD helpers - basic operations with populate", async () => {
     ],
   });
   assertEquals(tagHistoryPosts.length, 1);
-  assertEquals((tagHistoryPosts[0]).title, "Midnight");
+  assertEquals(tagHistoryPosts[0].title, "Midnight");
 
   const highRatedPosts = await crud.posts.find({
     "metadata.rating": { $gte: 4.7 },

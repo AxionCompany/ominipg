@@ -6,6 +6,7 @@
  */
 
 import { Ominipg, withDrizzle } from "../src/client/index.ts";
+import { createPGliteProvider } from "../src/providers/pglite.ts";
 import { drizzle } from "npm:drizzle-orm/pg-proxy";
 import {
   integer,
@@ -38,6 +39,7 @@ export async function example() {
   // 1. Connect to Ominipg (ORM-agnostic)
   const ominipg = await Ominipg.connect({
     url: ":memory:", // In-memory database for demo
+    pgliteProvider: createPGliteProvider(),
     schemaSQL: schemaDDL,
   });
 

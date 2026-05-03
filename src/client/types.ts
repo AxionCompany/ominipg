@@ -8,7 +8,11 @@
  */
 
 import type { CrudSchemas } from "./crud/types.ts";
-import type { PGliteConfig } from "../shared/types.ts";
+import type {
+  PGliteConfig,
+  PGliteProvider,
+  PgProvider,
+} from "../shared/types.ts";
 
 /**
  * Configuration options for establishing an Ominipg connection.
@@ -84,7 +88,7 @@ export interface OminipgConnectionOptions {
   /**
    * Array of PGlite extension names to load dynamically.
    * Only applicable when using PGlite (not PostgreSQL).
-   * Extensions will be imported from '@electric-sql/pglite/contrib/{extensionName}'.
+   * Extensions are loaded by the configured PGlite provider.
    *
    * @example
    * ```typescript
@@ -98,6 +102,19 @@ export interface OminipgConnectionOptions {
    * Useful for tuning WASM memory, cache sizing, or providing a precompiled binary.
    */
   pgliteConfig?: PGliteConfig;
+
+  /**
+   * Provider used to load PGlite when connecting to ':memory:' or 'file://' URLs.
+   * Required for PGlite connections so the core package does not hard-depend on
+   * '@electric-sql/pglite'.
+   */
+  pgliteProvider?: PGliteProvider;
+
+  /**
+   * Provider used to load node-postgres and logical replication support.
+   * Required for direct PostgreSQL connections and sync.
+   */
+  pgProvider?: PgProvider;
 
   /**
    * Force use of a Web Worker even when only a Postgres URL is provided.

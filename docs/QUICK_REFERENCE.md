@@ -6,12 +6,57 @@ Fast lookup for common Ominipg operations.
 
 ## Installation
 
+### Deno
+
+Add the engine imports your app uses:
+
+```json
+{
+  "imports": {
+    "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.4",
+    "pg": "npm:pg@8.16.3",
+    "pg-logical-replication": "npm:pg-logical-replication@2.4.0"
+  }
+}
+```
+
+For PGlite extensions, also map the extension subpaths you enable:
+
+```json
+{
+  "imports": {
+    "@electric-sql/pglite/contrib/uuid_ossp": "npm:@electric-sql/pglite@0.3.4/contrib/uuid_ossp",
+    "@electric-sql/pglite/vector": "npm:@electric-sql/pglite@0.3.4/vector"
+  }
+}
+```
+
 ```typescript
 // Full library
 import { Ominipg } from "jsr:@oxian/ominipg";
+import { createPgProvider } from "jsr:@oxian/ominipg/pg";
+import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
 // CRUD module only (use with any database library)
-import { defineSchema, createCrudApi } from "jsr:@oxian/ominipg/crud";
+import { createCrudApi, defineSchema } from "jsr:@oxian/ominipg/crud";
+```
+
+### Node.js
+
+Node.js support requires Node 22+ and uses the ESM-only npm package.
+
+```bash
+npm install @oxian/ominipg
+```
+
+```typescript
+// Full library
+import { Ominipg } from "@oxian/ominipg";
+import { createPgProvider } from "@oxian/ominipg/pg";
+import { createPGliteProvider } from "@oxian/ominipg/pglite";
+
+// CRUD module only (use with any database library)
+import { createCrudApi, defineSchema } from "@oxian/ominipg/crud";
 ```
 
 ---
@@ -20,37 +65,46 @@ import { defineSchema, createCrudApi } from "jsr:@oxian/ominipg/crud";
 
 ```typescript
 // In-memory database
-const db = await Ominipg.connect({ url: ":memory:" });
+const db = await Ominipg.connect({
+  url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
+});
 
 // PostgreSQL
-const db = await Ominipg.connect({ 
-  url: "postgresql://user:pass@host:5432/db" 
+const db = await Ominipg.connect({
+  url: "postgresql://user:pass@host:5432/db",
+  pgProvider: createPgProvider(),
 });
 
 // With sync
 const db = await Ominipg.connect({
   url: ":memory:",
-  syncUrl: "postgresql://user:pass@host:5432/db"
+  syncUrl: "postgresql://user:pass@host:5432/db",
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
 });
 
 // With schema
 const db = await Ominipg.connect({
   url: ":memory:",
-  schemaSQL: [`CREATE TABLE users (...)`]
+  pgliteProvider: createPGliteProvider(),
+  schemaSQL: [`CREATE TABLE users (...)`],
 });
 
 // With extensions
 const db = await Ominipg.connect({
   url: ":memory:",
-  pgliteExtensions: ["uuid_ossp", "vector"]
+  pgliteProvider: createPGliteProvider(),
+  pgliteExtensions: ["uuid_ossp", "vector"],
 });
 
 // With custom WASM memory limits
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   pgliteConfig: {
     initialMemory: 256 * 1024 * 1024,
-  }
+  },
 });
 ```
 
@@ -66,19 +120,19 @@ console.log(result.rows);
 // With parameters
 const result = await db.query(
   "SELECT * FROM users WHERE age > $1",
-  [18]
+  [18],
 );
 
 // Insert
 await db.query(
   "INSERT INTO users (name, email) VALUES ($1, $2)",
-  ["Alice", "alice@example.com"]
+  ["Alice", "alice@example.com"],
 );
 
 // Update
 await db.query(
   "UPDATE users SET name = $1 WHERE id = $2",
-  ["Bob", 1]
+  ["Bob", 1],
 );
 
 // Delete
@@ -93,9 +147,11 @@ await db.query("DELETE FROM users WHERE id = $1", [1]);
 
 ```typescript
 import { defineSchema } from "jsr:@oxian/ominipg";
+import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   schemas: defineSchema({
     users: {
       schema: {
@@ -104,14 +160,14 @@ const db = await Ominipg.connect({
           id: { type: "string" },
           name: { type: "string" },
           email: { type: "string" },
-          age: { type: "number" }
+          age: { type: "number" },
         },
-        required: ["id", "name", "email"]
+        required: ["id", "name", "email"],
       },
       keys: [{ property: "id" }],
-      timestamps: true
-    }
-  })
+      timestamps: true,
+    },
+  }),
 });
 ```
 
@@ -123,13 +179,13 @@ const user = await db.crud.users.create({
   id: "1",
   name: "Alice",
   email: "alice@example.com",
-  age: 25
+  age: 25,
 });
 
 // Create many
 const users = await db.crud.users.createMany([
   { id: "1", name: "Alice", email: "alice@example.com" },
-  { id: "2", name: "Bob", email: "bob@example.com" }
+  { id: "2", name: "Bob", email: "bob@example.com" },
 ]);
 
 // Find all
@@ -144,14 +200,14 @@ const user = await db.crud.users.findOne({ id: "1" });
 // Update
 const updated = await db.crud.users.update(
   { id: "1" },
-  { age: 26 }
+  { age: 26 },
 );
 
 // Upsert
 const user = await db.crud.users.update(
   { id: "1" },
   { id: "1", name: "Alice", email: "alice@example.com" },
-  { upsert: true }
+  { upsert: true },
 );
 
 // Delete
@@ -161,7 +217,7 @@ await db.crud.users.delete({ id: "1" });
 ### Standalone CRUD (with other libraries)
 
 ```typescript
-import { defineSchema, createCrudApi } from "jsr:@oxian/ominipg/crud";
+import { createCrudApi, defineSchema } from "jsr:@oxian/ominipg/crud";
 
 // Define schemas
 const schemas = defineSchema({
@@ -171,12 +227,12 @@ const schemas = defineSchema({
       properties: {
         id: { type: "string" },
         name: { type: "string" },
-        email: { type: "string" }
+        email: { type: "string" },
       },
-      required: ["id", "name", "email"]
+      required: ["id", "name", "email"],
     },
-    keys: [{ property: "id" }]
-  }
+    keys: [{ property: "id" }],
+  },
 });
 
 // Type inference
@@ -257,6 +313,7 @@ await db.crud.posts.find({}, { populate: ["author", "tags"] });
 
 ```typescript
 import { withDrizzle } from "jsr:@oxian/ominipg";
+import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 import { drizzle } from "npm:drizzle-orm/pg-proxy";
 import { pgTable, serial, text } from "npm:drizzle-orm/pg-core";
 import { eq, gt } from "npm:drizzle-orm";
@@ -265,11 +322,14 @@ import { eq, gt } from "npm:drizzle-orm";
 const users = pgTable("users", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
-  age: integer("age")
+  age: integer("age"),
 });
 
 // Connect
-const ominipg = await Ominipg.connect({ url: ":memory:" });
+const ominipg = await Ominipg.connect({
+  url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
+});
 const db = withDrizzle(ominipg, drizzle, { users });
 
 // Insert
@@ -299,7 +359,9 @@ const results = await db.select()
 // Setup
 const db = await Ominipg.connect({
   url: ":memory:",
-  syncUrl: "postgresql://user:pass@host:5432/db"
+  syncUrl: "postgresql://user:pass@host:5432/db",
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
 });
 
 // Make local changes
@@ -326,7 +388,8 @@ db.on("sync:end", (r) => console.log(`Done: ${r.pushed}`));
 // Load extensions
 const db = await Ominipg.connect({
   url: ":memory:",
-  pgliteExtensions: ["uuid_ossp", "vector"]
+  pgliteProvider: createPGliteProvider(),
+  pgliteExtensions: ["uuid_ossp", "vector"],
 });
 
 // UUID
@@ -342,14 +405,17 @@ await db.query(`
 
 await db.query(
   "INSERT INTO docs (embedding) VALUES ($1::vector)",
-  ["[0.1, 0.2, ...]"]
+  ["[0.1, 0.2, ...]"],
 );
 
-const similar = await db.query(`
+const similar = await db.query(
+  `
   SELECT * FROM docs
   ORDER BY embedding <=> $1::vector
   LIMIT 5
-`, [searchVector]);
+`,
+  [searchVector],
+);
 ```
 
 ---
@@ -387,8 +453,8 @@ const users = await db.crud.users.find(
   {
     limit: pageSize,
     skip: (page - 1) * pageSize,
-    sort: { createdAt: "desc" }
-  }
+    sort: { createdAt: "desc" },
+  },
 );
 ```
 
@@ -400,8 +466,8 @@ const searchTerm = "alice";
 const results = await db.crud.users.find({
   $or: [
     { name: { $ilike: `%${searchTerm}%` } },
-    { email: { $ilike: `%${searchTerm}%` } }
-  ]
+    { email: { $ilike: `%${searchTerm}%` } },
+  ],
 });
 ```
 
@@ -413,9 +479,9 @@ await db.crud.users.update(
   {
     email: "alice@example.com",
     name: "Alice",
-    age: 25
+    age: 25,
   },
-  { upsert: true }
+  { upsert: true },
 );
 ```
 
@@ -425,12 +491,12 @@ await db.crud.users.update(
 // Mark as deleted
 await db.crud.users.update(
   { id: "1" },
-  { deletedAt: new Date().toISOString() }
+  { deletedAt: new Date().toISOString() },
 );
 
 // Find non-deleted
 const active = await db.crud.users.find({
-  deletedAt: { $exists: false }
+  deletedAt: { $exists: false },
 });
 ```
 
@@ -455,9 +521,9 @@ try {
 ```typescript
 const schemas = defineSchema({
   users: {
-    schema: { /* ... */ },
-    keys: [{ property: "id" }]
-  }
+    schema: {/* ... */},
+    keys: [{ property: "id" }],
+  },
 });
 
 type User = typeof schemas.users.$inferSelect;
@@ -470,7 +536,7 @@ type UserKey = typeof schemas.users.$inferKey;
 ## See Also
 
 - [Full API Reference](./API.md)
+- [0.6 Migration Guide](./MIGRATION_0_6.md)
 - [CRUD Guide](./CRUD.md)
 - [Drizzle Integration](./DRIZZLE.md)
 - [Sync Guide](./SYNC.md)
-

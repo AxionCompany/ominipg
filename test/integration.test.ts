@@ -1,4 +1,6 @@
 import { Ominipg } from "../src/client/index.ts";
+import { createPgProvider } from "../src/providers/pg.ts";
+import { createPGliteProvider } from "../src/providers/pglite.ts";
 import { assert, assertEquals } from "jsr:@std/assert@1.0.13";
 
 const SYNC_DB_URL = Deno.env.get("SYNC_DB_URL");
@@ -43,6 +45,8 @@ if (!SYNC_DB_URL) {
     const db = await Ominipg.connect({
       url: DB_URL,
       syncUrl: SYNC_DB_URL,
+      pgProvider: createPgProvider(),
+      pgliteProvider: createPGliteProvider(),
       schemaSQL: schemaDDL,
       disableAutoPush: true, // Disable auto-push for predictable testing
     });
@@ -135,6 +139,8 @@ if (!SYNC_DB_URL) {
     const db = await Ominipg.connect({
       url: DB_URL,
       syncUrl: SYNC_DB_URL,
+      pgProvider: createPgProvider(),
+      pgliteProvider: createPGliteProvider(),
       schemaSQL: schemaDDL,
       disableAutoPush: true,
     });
@@ -177,6 +183,8 @@ if (!SYNC_DB_URL) {
     const db = await Ominipg.connect({
       url: DB_URL,
       syncUrl: SYNC_DB_URL,
+      pgProvider: createPgProvider(),
+      pgliteProvider: createPGliteProvider(),
       schemaSQL: schemaDDL,
       disableAutoPush: true,
     });

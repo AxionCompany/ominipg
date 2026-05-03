@@ -1,14 +1,14 @@
 /**
  * Standalone CRUD Example
- * 
+ *
  * This example shows how to use the CRUD module independently
  * with any database library (postgres.js, pg, Deno.postgres, etc.)
- * 
+ *
  * Run this with: deno run --allow-all examples/crud-standalone.ts
  */
 
-import { Pool } from "pg";
-import { defineSchema, createCrudApi } from "../src/client/crud/index.ts";
+import { Pool } from "npm:pg@8.16.3";
+import { createCrudApi, defineSchema } from "../src/client/crud/index.ts";
 
 console.log("🔌 Standalone CRUD Module Demo\n");
 
@@ -231,11 +231,12 @@ console.log(`✓ Upserted: ${upserted?.name} - $${upserted?.price}`);
 console.log("\n🧹 Cleaning up...");
 await pool.end();
 
-console.log("\n🎉 Done! Standalone CRUD module works with any database library.");
+console.log(
+  "\n🎉 Done! Standalone CRUD module works with any database library.",
+);
 console.log("💡 Key benefits:");
 console.log("   - Use with postgres.js, pg, or any other library");
 console.log("   - Full type safety with TypeScript");
 console.log("   - MongoDB-like query syntax");
 console.log("   - Runtime validation with Zod");
 console.log("   - No vendor lock-in!");
-

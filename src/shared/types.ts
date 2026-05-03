@@ -6,8 +6,6 @@
  * main thread and the worker responsible for executing database operations.
  */
 
-import type { PGliteOptions } from "npm:@electric-sql/pglite@0.3.4";
-
 /**
  * Union describing every message that can be sent from the main thread to the
  * worker. Each variant represents a discrete command or control signal.
@@ -33,7 +31,72 @@ export interface PGliteConfig extends PGliteOptions {
   [key: string]: unknown;
 }
 
-export type { Extensions as PGliteExtensionsMap } from "npm:@electric-sql/pglite@0.3.4";
+export interface PGliteOptions {
+  extensions?: PGliteExtensionsMap;
+  [key: string]: unknown;
+}
+
+export type PGliteExtensionsMap = Record<string, unknown>;
+
+export interface PGliteInstance {
+  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
+  exec(sql: string): Promise<unknown>;
+  listen(channel: string, callback: () => void): Promise<unknown>;
+  close(): Promise<void>;
+}
+
+export interface PGliteConstructor {
+  new (...args: any[]): PGliteInstance;
+}
+
+export interface PGliteModule {
+  PGlite: PGliteConstructor;
+}
+
+export interface PGliteProvider {
+  moduleSpecifier?: string;
+  extensionSpecifiers?: Record<string, string>;
+  loadPGlite?: () => Promise<PGliteModule>;
+  loadExtension?: (name: string) => Promise<Record<string, unknown>>;
+}
+
+export interface PgPoolClient {
+  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
+  release(): void;
+}
+
+export interface PgPool {
+  connect(): Promise<PgPoolClient>;
+  end(): Promise<void>;
+  options?: { connectionString?: string };
+}
+
+export interface PgModule {
+  Pool: new (options: { connectionString: string; max?: number }) => PgPool;
+}
+
+export interface LogicalReplicationServiceLike {
+  on(event: string, listener: (...args: any[]) => void): void;
+  subscribe(plugin: unknown, slotName: string): Promise<unknown>;
+  stop(): Promise<unknown>;
+}
+
+export interface PgLogicalReplicationModule {
+  LogicalReplicationService: new (
+    options: { connectionString: string },
+  ) => LogicalReplicationServiceLike;
+  PgoutputPlugin: new (options: {
+    protoVersion: 1 | 2;
+    publicationNames: string[];
+  }) => unknown;
+}
+
+export interface PgProvider {
+  moduleSpecifier?: string;
+  logicalReplicationModuleSpecifier?: string;
+  loadPg?: () => Promise<PgModule>;
+  loadLogicalReplication?: () => Promise<PgLogicalReplicationModule>;
+}
 
 /**
  * Responses emitted by the worker back to the main thread.
@@ -71,6 +134,8 @@ export interface InitMsg {
   disableAutoPush?: boolean;
   pgliteExtensions?: string[];
   pgliteConfig?: PGliteConfig;
+  pgliteProvider?: PGliteProvider;
+  pgProvider?: PgProvider;
   logMetrics?: boolean;
 }
 

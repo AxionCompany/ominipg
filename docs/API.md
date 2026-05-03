@@ -2,6 +2,33 @@
 
 Complete API documentation for Ominipg.
 
+Ominipg supports Deno and Node.js 22+. The npm package is ESM-only.
+
+In Deno, database engines are resolved from the application import map. Add the
+engines you use to `deno.json`:
+
+```json
+{
+  "imports": {
+    "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.4",
+    "pg": "npm:pg@8.16.3",
+    "pg-logical-replication": "npm:pg-logical-replication@2.4.0"
+  }
+}
+```
+
+When using PGlite extensions in Deno, map the extension subpaths you enable, for
+example:
+
+```json
+{
+  "imports": {
+    "@electric-sql/pglite/contrib/uuid_ossp": "npm:@electric-sql/pglite@0.3.4/contrib/uuid_ossp",
+    "@electric-sql/pglite/vector": "npm:@electric-sql/pglite@0.3.4/vector"
+  }
+}
+```
+
 ---
 
 ## Table of Contents
@@ -23,13 +50,30 @@ The main class for interacting with PostgreSQL databases.
 
 ### Type imports
 
+For Deno:
+
 ```typescript
 import type {
-  OminipgConnectionOptions,
-  CrudSchemas,
   CrudApi,
+  CrudSchemas,
   OminipgClientEvents,
+  OminipgConnectionOptions,
 } from "jsr:@oxian/ominipg";
+import type { PgProvider } from "jsr:@oxian/ominipg/pg";
+import type { PGliteProvider } from "jsr:@oxian/ominipg/pglite";
+```
+
+For Node.js:
+
+```typescript
+import type {
+  CrudApi,
+  CrudSchemas,
+  OminipgClientEvents,
+  OminipgConnectionOptions,
+} from "@oxian/ominipg";
+import type { PgProvider } from "@oxian/ominipg/pg";
+import type { PGliteProvider } from "@oxian/ominipg/pglite";
 ```
 
 ### `Ominipg.connect(options)`
@@ -37,6 +81,7 @@ import type {
 Creates a new database connection.
 
 **Signature:**
+
 ```typescript
 static async connect(
   options: OminipgConnectionOptions
@@ -49,34 +94,44 @@ static async connect<S extends CrudSchemas>(
 ```
 
 **Parameters:**
-- `options` - Connection configuration (see [Connection Options](#connection-options))
+
+- `options` - Connection configuration (see
+  [Connection Options](#connection-options))
 
 **Returns:**
+
 - `Promise<Ominipg>` - Connected database instance
-- `Promise<OminipgWithCrud<S>>` - Database instance with typed CRUD API when schemas are provided
+- `Promise<OminipgWithCrud<S>>` - Database instance with typed CRUD API when
+  schemas are provided
 
 **Example:**
+
 ```typescript
+import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
+
 // Basic connection
 const db = await Ominipg.connect({
-  url: ":memory:"
+  url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
 });
 
 // With schema
 const db = await Ominipg.connect({
   url: ":memory:",
-  schemaSQL: [`CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)`]
+  pgliteProvider: createPGliteProvider(),
+  schemaSQL: [`CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)`],
 });
 
 // With CRUD schemas
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   schemas: defineSchema({
     users: {
-      schema: { /* JSON Schema */ },
-      keys: [{ property: "id" }]
-    }
-  })
+      schema: {/* JSON Schema */},
+      keys: [{ property: "id" }],
+    },
+  }),
 });
 ```
 
@@ -92,25 +147,29 @@ Configuration object for database connections.
 interface OminipgConnectionOptions {
   // Database URL
   url?: string;
-  
+
   // SQL statements to initialize schema
   schemaSQL?: string[];
-  
+
   // Remote database URL for syncing
   syncUrl?: string;
-  
+
+  // Engine providers
+  pgliteProvider?: PGliteProvider;
+  pgProvider?: PgProvider;
+
   // Force worker mode (default: auto-detect)
   useWorker?: boolean;
-  
+
   // PGlite extensions to load
   pgliteExtensions?: string[];
-  
+
   // Additional options forwarded to the embedded PGlite engine
   pgliteConfig?: PGliteConfig;
-  
+
   // CRUD schemas definition
   schemas?: CrudSchemas;
-  
+
   // Enable performance metrics logging
   logMetrics?: boolean;
 }
@@ -127,22 +186,27 @@ type PGliteConfig = {
 ### Properties
 
 #### `url` (optional)
+
 - **Type:** `string`
 - **Default:** `":memory:"`
 - **Description:** Database connection string
 
 **Supported formats:**
+
 ```typescript
-":memory:"                                    // In-memory PGlite
-"postgresql://user:pass@host:port/db"        // PostgreSQL connection
-"postgres://user:pass@host:port/db"          // PostgreSQL connection (alias)
+":memory:"; // In-memory PGlite
+"file://./data/app.db"; // Persistent PGlite
+"postgresql://user:pass@host:port/db"; // PostgreSQL connection
+"postgres://user:pass@host:port/db"; // PostgreSQL connection (alias)
 ```
 
 #### `schemaSQL` (optional)
+
 - **Type:** `string[]`
 - **Description:** Array of SQL DDL statements to execute on connection
 
 **Example:**
+
 ```typescript
 schemaSQL: [
   `CREATE TABLE IF NOT EXISTS users (
@@ -151,68 +215,106 @@ schemaSQL: [
     email TEXT UNIQUE,
     created_at TIMESTAMPTZ DEFAULT NOW()
   )`,
-  `CREATE INDEX idx_users_email ON users(email)`
-]
+  `CREATE INDEX idx_users_email ON users(email)`,
+];
 ```
 
 #### `syncUrl` (optional)
+
 - **Type:** `string`
 - **Description:** Remote PostgreSQL URL for syncing local changes
 
 When provided, enables local-first mode with sync capabilities.
 
 **Example:**
+
 ```typescript
-syncUrl: "postgresql://user:pass@myserver.com:5432/prod_db"
+syncUrl: "postgresql://user:pass@myserver.com:5432/prod_db";
 ```
 
 #### `useWorker` (optional)
+
 - **Type:** `boolean`
 - **Default:** Auto-detected based on configuration
 - **Description:** Force worker mode or direct mode
 
 **Auto-detection rules:**
+
 - PostgreSQL + no sync = Direct mode (best performance)
-- PGlite or sync enabled = Worker mode (isolation)
+- PGlite + no sync = in-process mode by default
+- Sync enabled or `useWorker: true` = Worker mode (Deno Web Worker or Node
+  `worker_threads`)
+
+In Ominipg 0.6+, PGlite without sync defaults to in-process execution unless
+`useWorker: true` is provided. Sync still uses worker mode by default.
 
 **Example:**
+
 ```typescript
-useWorker: true  // Force worker mode
+useWorker: true; // Force worker mode
 ```
 
 #### `pgliteExtensions` (optional)
+
 - **Type:** `string[]`
 - **Description:** PGlite extensions to load (only for PGlite databases)
 
 **Available extensions:**
+
 - `"uuid_ossp"` - UUID generation functions
 - `"vector"` - Vector similarity search (pgvector)
 - `"postgis"` - Geographic information system
 - And more (see [Extensions Guide](./EXTENSIONS.md))
 
 **Example:**
+
 ```typescript
-pgliteExtensions: ["uuid_ossp", "vector"]
+pgliteExtensions: ["uuid_ossp", "vector"];
 ```
 
 #### `pgliteConfig` (optional)
+
 - **Type:** `PGliteConfig`
-- **Description:** Fine-grained configuration for the embedded PGlite runtime (e.g. WASM memory limits)
+- **Description:** Fine-grained configuration for the embedded PGlite runtime
+  (e.g. WASM memory limits)
 
 **Example:**
+
 ```typescript
 pgliteConfig: {
   initialMemory: 256 * 1024 * 1024,
 }
 ```
 
+#### `pgliteProvider` (required for PGlite URLs)
+
+- **Type:** `PGliteProvider`
+- **Description:** Loads PGlite only when a `:memory:` or `file://` connection
+  is used. Import `createPGliteProvider` from `@oxian/ominipg/pglite` or
+  `jsr:@oxian/ominipg/pglite`.
+- **Worker mode:** Custom callback providers are supported in-process. Worker
+  mode requires a provider created with module specifiers, such as the default
+  `createPGliteProvider()`, because worker messages must be serializable.
+
+#### `pgProvider` (required for PostgreSQL URLs or sync)
+
+- **Type:** `PgProvider`
+- **Description:** Loads `pg` and logical replication support only when direct
+  PostgreSQL or sync features are used. Import `createPgProvider` from
+  `@oxian/ominipg/pg` or `jsr:@oxian/ominipg/pg`.
+- **Worker mode:** Custom callback providers are supported for direct in-process
+  PostgreSQL. Sync and worker mode require serializable module specifiers, such
+  as the default `createPgProvider()`.
+
 #### `schemas` (optional)
+
 - **Type:** `CrudSchemas`
 - **Description:** JSON Schema definitions for CRUD API
 
 See [CRUD API Guide](./CRUD.md) for details.
 
 #### `logMetrics` (optional)
+
 - **Type:** `boolean`
 - **Default:** `false`
 - **Description:** Enable memory usage logging for performance monitoring
@@ -226,6 +328,7 @@ See [CRUD API Guide](./CRUD.md) for details.
 Execute a SQL query.
 
 **Signature:**
+
 ```typescript
 async query<TRow extends Record<string, unknown> = Record<string, unknown>>(
   sql: string,
@@ -234,13 +337,16 @@ async query<TRow extends Record<string, unknown> = Record<string, unknown>>(
 ```
 
 **Parameters:**
+
 - `sql` - SQL query string
 - `params` - Optional query parameters (uses `$1`, `$2`, etc. in SQL)
 
 **Returns:**
+
 - Promise resolving to `{ rows: TRow[] }`
 
 **Example:**
+
 ```typescript
 // Simple query
 const result = await db.query("SELECT * FROM users");
@@ -249,7 +355,7 @@ console.log(result.rows);
 // Parameterized query
 const result = await db.query(
   "SELECT * FROM users WHERE age > $1 AND city = $2",
-  [18, "New York"]
+  [18, "New York"],
 );
 
 // With type parameter
@@ -278,21 +384,27 @@ Methods for syncing local changes with remote databases.
 Push local changes to the remote database.
 
 **Signature:**
+
 ```typescript
 async sync(): Promise<{ pushed: number }>
 ```
 
 **Returns:**
+
 - `{ pushed: number }` - Number of records pushed to remote
 
 **Throws:**
+
 - Error if called in direct PostgreSQL mode (sync not available)
 
 **Example:**
+
 ```typescript
 const db = await Ominipg.connect({
   url: ":memory:",
-  syncUrl: "postgresql://..."
+  syncUrl: "postgresql://...",
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
 });
 
 // Make local changes
@@ -305,6 +417,7 @@ console.log(`Pushed ${result.pushed} changes`);
 ```
 
 **Events:**
+
 - Emits `"sync:start"` when sync begins
 - Emits `"sync:end"` with result when sync completes
 
@@ -313,17 +426,20 @@ console.log(`Pushed ${result.pushed} changes`);
 Synchronize sequence values from the remote database.
 
 **Signature:**
+
 ```typescript
 async syncSequences(): Promise<{ synced: number }>
 ```
 
 **Returns:**
+
 - `{ synced: number }` - Number of sequences synchronized
 
-**Description:**
-Updates local sequence values (like auto-increment IDs) from the remote database to prevent conflicts.
+**Description:** Updates local sequence values (like auto-increment IDs) from
+the remote database to prevent conflicts.
 
 **Example:**
+
 ```typescript
 const result = await db.syncSequences();
 console.log(`Synced ${result.synced} sequences`);
@@ -338,14 +454,17 @@ console.log(`Synced ${result.synced} sequences`);
 Get information about the database state.
 
 **Signature:**
+
 ```typescript
 async getDiagnosticInfo(): Promise<Record<string, unknown>>
 ```
 
 **Returns:**
+
 - Object containing diagnostic information
 
 **Example:**
+
 ```typescript
 const info = await db.getDiagnosticInfo();
 console.log(info);
@@ -366,32 +485,39 @@ console.log(info);
 Close the database connection and cleanup resources.
 
 **Signature:**
+
 ```typescript
 async close(): Promise<void>
 ```
 
 **Example:**
+
 ```typescript
 await db.close();
 ```
 
 **Events:**
+
 - Emits `"close"` event when connection is closed
 
 ---
 
 ## CRUD API
 
-When schemas are provided during connection, a CRUD API is automatically generated.
+When schemas are provided during connection, a CRUD API is automatically
+generated.
 
 **Standalone Usage:**
 
-You can also use the CRUD module independently with any database library by importing from `jsr:@oxian/ominipg/crud`. See the [CRUD Guide](./CRUD.md#using-with-other-libraries) for examples with postgres.js, node-postgres, Drizzle, and more.
+You can also use the CRUD module independently with any database library by
+importing from `jsr:@oxian/ominipg/crud`. See the
+[CRUD Guide](./CRUD.md#using-with-other-libraries) for examples with
+postgres.js, node-postgres, Drizzle, and more.
 
 ```typescript
-import { defineSchema, createCrudApi } from "jsr:@oxian/ominipg/crud";
+import { createCrudApi, defineSchema } from "jsr:@oxian/ominipg/crud";
 
-const schemas = defineSchema({ users: { /* ... */ } });
+const schemas = defineSchema({ users: {/* ... */} });
 const crud = createCrudApi(schemas, queryFunction);
 ```
 
@@ -404,6 +530,7 @@ Each table defined in schemas gets the following methods:
 Find multiple records matching a filter.
 
 **Signature:**
+
 ```typescript
 async find(
   filter?: Filter<Row>,
@@ -418,6 +545,7 @@ See [CRUD API Guide](./CRUD.md) for complete documentation.
 Find a single record.
 
 **Signature:**
+
 ```typescript
 async findOne(filter?: Filter<Row>): Promise<Row | null>
 ```
@@ -427,6 +555,7 @@ async findOne(filter?: Filter<Row>): Promise<Row | null>
 Create a new record.
 
 **Signature:**
+
 ```typescript
 async create(data: InsertRow): Promise<Row>
 ```
@@ -436,6 +565,7 @@ async create(data: InsertRow): Promise<Row>
 Create multiple records.
 
 **Signature:**
+
 ```typescript
 async createMany(data: InsertRow[]): Promise<Row[]>
 ```
@@ -445,6 +575,7 @@ async createMany(data: InsertRow[]): Promise<Row[]>
 Update records matching a filter.
 
 **Signature:**
+
 ```typescript
 async update(
   filter: Filter<Row>,
@@ -462,6 +593,7 @@ Alias for `update()`.
 Delete records matching a filter.
 
 **Signature:**
+
 ```typescript
 async delete(filter: Filter<Row>): Promise<{ deletedCount: number }>
 ```
@@ -471,12 +603,16 @@ async delete(filter: Filter<Row>): Promise<{ deletedCount: number }>
 Alias for `delete()`.
 
 **Example:**
+
 ```typescript
 const schemas = defineSchema({
-  users: { /* schema */ }
+  users: {/* schema */},
 });
 
-const db = await Ominipg.connect({ schemas });
+const db = await Ominipg.connect({
+  pgliteProvider: createPGliteProvider(),
+  schemas,
+});
 
 // Type inference (no imports needed!)
 type User = typeof schemas.users.$inferSelect;
@@ -492,13 +628,13 @@ const adults = await db.crud.users.find({ age: { $gte: 18 } });
 const user = await db.crud.users.create({
   id: "1",
   name: "Alice",
-  email: "alice@example.com"
+  email: "alice@example.com",
 });
 
 // Update user
 await db.crud.users.update(
   { id: "1" },
-  { name: "Alice Smith" }
+  { name: "Alice Smith" },
 );
 
 // Delete user
@@ -514,23 +650,27 @@ await db.crud.users.delete({ id: "1" });
 Create a Drizzle ORM adapter for an Ominipg instance.
 
 **Signature:**
+
 ```typescript
 function withDrizzle<TDrizzle, TSchema extends Record<string, unknown>>(
   ominipgInstance: Ominipg,
   drizzleFactory: DrizzleFactory<TDrizzle, TSchema>,
-  schema?: TSchema
-): TDrizzle & OminipgDrizzleMixin
+  schema?: TSchema,
+): TDrizzle & OminipgDrizzleMixin;
 ```
 
 **Parameters:**
+
 - `ominipgInstance` - Connected Ominipg instance
 - `drizzleFactory` - The `drizzle` function from `drizzle-orm/pg-proxy`
 - `schema` - Optional Drizzle schema object
 
 **Returns:**
+
 - Drizzle instance with Ominipg methods added
 
 **Added Methods:**
+
 - `sync()` - Sync local changes
 - `syncSequences()` - Sync sequences
 - `getDiagnosticInfo()` - Get diagnostic info
@@ -539,17 +679,22 @@ function withDrizzle<TDrizzle, TSchema extends Record<string, unknown>>(
 - `_ominipg` - Access underlying Ominipg instance
 
 **Example:**
+
 ```typescript
 import { Ominipg, withDrizzle } from "jsr:@oxian/ominipg";
+import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 import { drizzle } from "npm:drizzle-orm/pg-proxy";
 import { pgTable, serial, text } from "npm:drizzle-orm/pg-core";
 
 const users = pgTable("users", {
   id: serial("id").primaryKey(),
-  name: text("name").notNull()
+  name: text("name").notNull(),
 });
 
-const ominipg = await Ominipg.connect({ url: ":memory:" });
+const ominipg = await Ominipg.connect({
+  url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
+});
 const db = withDrizzle(ominipg, drizzle, { users });
 
 // Use Drizzle methods
@@ -611,6 +756,7 @@ db.on("close", () => {
 ### Core Types
 
 #### `OminipgConnectionOptions`
+
 ```typescript
 interface OminipgConnectionOptions {
   url?: string;
@@ -624,13 +770,15 @@ interface OminipgConnectionOptions {
 ```
 
 #### `OminipgWithCrud<Schemas>`
+
 ```typescript
 type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
   crud: CrudApi<Schemas>;
-}
+};
 ```
 
 #### `OminipgDrizzleMixin`
+
 ```typescript
 type OminipgDrizzleMixin = {
   sync: () => Promise<{ pushed: number }>;
@@ -639,23 +787,24 @@ type OminipgDrizzleMixin = {
   close: () => Promise<void>;
   queryRaw: <TRow = Record<string, unknown>>(
     sql: string,
-    params?: unknown[]
+    params?: unknown[],
   ) => Promise<{ rows: TRow[] }>;
   _ominipg: Ominipg;
-}
+};
 ```
 
 ### CRUD Types
 
 **Type Inference (Recommended):**
+
 ```typescript
 const schemas = defineSchema({
-  users: { /* schema */ }
+  users: {/* schema */},
 });
 
-type User = typeof schemas.users.$inferSelect;      // Full row type
-type NewUser = typeof schemas.users.$inferInsert;   // Insert type
-type UserKey = typeof schemas.users.$inferKey;       // Key type
+type User = typeof schemas.users.$inferSelect; // Full row type
+type NewUser = typeof schemas.users.$inferInsert; // Insert type
+type UserKey = typeof schemas.users.$inferKey; // Key type
 ```
 
 See [CRUD API Guide](./CRUD.md) for complete type documentation.
@@ -667,7 +816,10 @@ See [CRUD API Guide](./CRUD.md) for complete type documentation.
 ### 1. Always Close Connections
 
 ```typescript
-const db = await Ominipg.connect({ url: ":memory:" });
+const db = await Ominipg.connect({
+  url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
+});
 try {
   // Your code here
 } finally {
@@ -706,13 +858,16 @@ db.on("error", (error) => {
 // For PostgreSQL without sync - use direct mode (faster)
 const db = await Ominipg.connect({
   url: "postgresql://...",
-  useWorker: false
+  pgProvider: createPgProvider(),
+  useWorker: false,
 });
 
-// For local-first or PGlite - use worker mode (default)
+// For local-first sync - use worker mode (default)
 const db = await Ominipg.connect({
   url: ":memory:",
-  syncUrl: "postgresql://..."
+  syncUrl: "postgresql://...",
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
   // useWorker: true is default
 });
 ```
@@ -721,9 +876,9 @@ const db = await Ominipg.connect({
 
 ## See Also
 
+- [0.6 Migration Guide](./MIGRATION_0_6.md)
 - [CRUD API Guide](./CRUD.md)
 - [Drizzle Integration](./DRIZZLE.md)
 - [Sync Guide](./SYNC.md)
 - [Extensions](./EXTENSIONS.md)
 - [Architecture](./ARCHITECTURE.md)
-

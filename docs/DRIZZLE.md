@@ -28,6 +28,7 @@ Drizzle ORM provides:
 - ✅ **Flexible** - Drop down to raw SQL when needed
 
 **Ominipg + Drizzle** = Best of both worlds:
+
 - Drizzle's type safety and query builder
 - Ominipg's local-first sync and worker isolation
 
@@ -43,7 +44,13 @@ import { Ominipg, withDrizzle } from "jsr:@oxian/ominipg";
 
 // Import Drizzle
 import { drizzle } from "npm:drizzle-orm/pg-proxy";
-import { pgTable, serial, text, integer, timestamp } from "npm:drizzle-orm/pg-core";
+import {
+  integer,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+} from "npm:drizzle-orm/pg-core";
 ```
 
 ### Define Schema
@@ -51,14 +58,21 @@ import { pgTable, serial, text, integer, timestamp } from "npm:drizzle-orm/pg-co
 Define your schema using Drizzle's schema builder:
 
 ```typescript
-import { pgTable, serial, text, varchar, timestamp, boolean } from "npm:drizzle-orm/pg-core";
+import {
+  boolean,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+  varchar,
+} from "npm:drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   name: varchar("name", { length: 100 }).notNull(),
   email: varchar("email", { length: 255 }).notNull().unique(),
   age: integer("age"),
-  createdAt: timestamp("created_at").defaultNow()
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const posts = pgTable("posts", {
@@ -67,7 +81,7 @@ export const posts = pgTable("posts", {
   title: text("title").notNull(),
   body: text("body").notNull(),
   published: boolean("published").default(false),
-  createdAt: timestamp("created_at").defaultNow()
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 // Export schema for type inference
@@ -80,6 +94,7 @@ export const schema = { users, posts };
 // 1. Create Ominipg instance
 const ominipg = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   schemaSQL: [
     `CREATE TABLE users (
       id SERIAL PRIMARY KEY,
@@ -95,8 +110,8 @@ const ominipg = await Ominipg.connect({
       body TEXT NOT NULL,
       published BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMPTZ DEFAULT NOW()
-    )`
-  ]
+    )`,
+  ],
 });
 
 // 2. Create Drizzle adapter
@@ -116,7 +131,7 @@ const db = withDrizzle(ominipg, drizzle, schema);
 const user = await db.insert(users).values({
   name: "Alice",
   email: "alice@example.com",
-  age: 25
+  age: 25,
 }).returning();
 
 console.log(user[0].id); // Auto-generated ID
@@ -124,7 +139,7 @@ console.log(user[0].id); // Auto-generated ID
 // Insert multiple records
 await db.insert(users).values([
   { name: "Bob", email: "bob@example.com", age: 30 },
-  { name: "Charlie", email: "charlie@example.com", age: 35 }
+  { name: "Charlie", email: "charlie@example.com", age: 35 },
 ]);
 ```
 
@@ -137,11 +152,11 @@ const allUsers = await db.select().from(users);
 // Select specific columns
 const names = await db.select({
   id: users.id,
-  name: users.name
+  name: users.name,
 }).from(users);
 
 // With conditions
-import { eq, gt, and, or } from "npm:drizzle-orm";
+import { and, eq, gt, or } from "npm:drizzle-orm";
 
 const adults = await db.select()
   .from(users)
@@ -162,9 +177,9 @@ await db.update(users)
 
 // Update multiple fields
 await db.update(users)
-  .set({ 
+  .set({
     name: "Alice Smith",
-    age: 26 
+    age: 26,
   })
   .where(eq(users.id, 1));
 
@@ -194,14 +209,23 @@ await db.delete(users)
 ### Column Types
 
 ```typescript
-import { 
-  pgTable,
-  serial, integer, bigint, real, doublePrecision,
-  varchar, text, char,
+import {
+  bigint,
   boolean,
-  date, timestamp, time,
-  json, jsonb,
-  uuid
+  char,
+  date,
+  doublePrecision,
+  integer,
+  json,
+  jsonb,
+  pgTable,
+  real,
+  serial,
+  text,
+  time,
+  timestamp,
+  uuid,
+  varchar,
 } from "npm:drizzle-orm/pg-core";
 
 export const products = pgTable("products", {
@@ -210,26 +234,26 @@ export const products = pgTable("products", {
   quantity: integer("quantity"),
   price: real("price"),
   totalValue: doublePrecision("total_value"),
-  
+
   // String types
   name: varchar("name", { length: 255 }),
   description: text("description"),
   code: char("code", { length: 10 }),
-  
+
   // Boolean
   inStock: boolean("in_stock").default(true),
-  
+
   // Date/Time
   releaseDate: date("release_date"),
   createdAt: timestamp("created_at").defaultNow(),
   processingTime: time("processing_time"),
-  
+
   // JSON
   metadata: json("metadata"),
   settings: jsonb("settings"),
-  
+
   // UUID
-  externalId: uuid("external_id")
+  externalId: uuid("external_id"),
 });
 ```
 
@@ -238,19 +262,19 @@ export const products = pgTable("products", {
 ```typescript
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
-  
+
   // NOT NULL
   name: text("name").notNull(),
-  
+
   // UNIQUE
   email: text("email").unique(),
-  
+
   // DEFAULT
   status: text("status").default("active"),
   createdAt: timestamp("created_at").defaultNow(),
-  
+
   // CHECK (via database)
-  age: integer("age") // Add CHECK in schemaSQL
+  age: integer("age"), // Add CHECK in schemaSQL
 });
 ```
 
@@ -260,14 +284,14 @@ export const users = pgTable("users", {
 import { relations } from "npm:drizzle-orm";
 
 export const usersRelations = relations(users, ({ many }) => ({
-  posts: many(posts)
+  posts: many(posts),
 }));
 
 export const postsRelations = relations(posts, ({ one }) => ({
   author: one(users, {
     fields: [posts.authorId],
-    references: [users.id]
-  })
+    references: [users.id],
+  }),
 }));
 ```
 
@@ -278,7 +302,20 @@ export const postsRelations = relations(posts, ({ one }) => ({
 ### Filtering
 
 ```typescript
-import { eq, ne, gt, gte, lt, lte, isNull, isNotNull, inArray, notInArray, like, ilike } from "npm:drizzle-orm";
+import {
+  eq,
+  gt,
+  gte,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  lt,
+  lte,
+  ne,
+  notInArray,
+} from "npm:drizzle-orm";
 
 // Comparison operators
 await db.select().from(users).where(eq(users.age, 25));
@@ -297,7 +334,7 @@ await db.select().from(users)
 // String operations
 await db.select().from(users)
   .where(like(users.name, "A%"));
-  
+
 await db.select().from(users)
   .where(ilike(users.email, "%@gmail.com"));
 ```
@@ -305,20 +342,20 @@ await db.select().from(users)
 ### Logical Operators
 
 ```typescript
-import { and, or, not } from "npm:drizzle-orm";
+import { and, not, or } from "npm:drizzle-orm";
 
 // AND
 await db.select().from(users)
   .where(and(
     gt(users.age, 18),
-    eq(users.status, "active")
+    eq(users.status, "active"),
   ));
 
 // OR
 await db.select().from(users)
   .where(or(
     eq(users.role, "admin"),
-    eq(users.role, "moderator")
+    eq(users.role, "moderator"),
   ));
 
 // NOT
@@ -330,9 +367,9 @@ await db.select().from(users)
   .where(and(
     or(
       eq(users.role, "admin"),
-      eq(users.role, "moderator")
+      eq(users.role, "moderator"),
     ),
-    gt(users.age, 18)
+    gt(users.age, 18),
   ));
 ```
 
@@ -353,10 +390,10 @@ const results = await db.select()
 const results = await db.select({
   postId: posts.id,
   postTitle: posts.title,
-  authorName: users.name
+  authorName: users.name,
 })
-.from(posts)
-.leftJoin(users, eq(posts.authorId, users.id));
+  .from(posts)
+  .leftJoin(users, eq(posts.authorId, users.id));
 ```
 
 ### Ordering & Limiting
@@ -391,35 +428,35 @@ await db.select().from(users)
 ### Aggregations
 
 ```typescript
-import { count, sum, avg, min, max } from "npm:drizzle-orm";
+import { avg, count, max, min, sum } from "npm:drizzle-orm";
 
 // Count
-const result = await db.select({ 
-  count: count() 
+const result = await db.select({
+  count: count(),
 }).from(users);
 
 // Count with condition
-const result = await db.select({ 
-  count: count() 
+const result = await db.select({
+  count: count(),
 })
-.from(users)
-.where(gt(users.age, 18));
+  .from(users)
+  .where(gt(users.age, 18));
 
 // Other aggregations
 const stats = await db.select({
   total: count(),
   avgAge: avg(users.age),
   minAge: min(users.age),
-  maxAge: max(users.age)
+  maxAge: max(users.age),
 }).from(users);
 
 // Group by
 const statsByRole = await db.select({
   role: users.role,
-  count: count()
+  count: count(),
 })
-.from(users)
-.groupBy(users.role);
+  .from(users)
+  .groupBy(users.role);
 ```
 
 ### Subqueries
@@ -458,10 +495,11 @@ Use the generated SQL in Ominipg's `schemaSQL`:
 ```typescript
 const db = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   schemaSQL: [
     // Paste generated SQL here
-    `CREATE TABLE users (...)`
-  ]
+    `CREATE TABLE users (...)`,
+  ],
 });
 ```
 
@@ -478,18 +516,24 @@ await ominipg.query(`
 `);
 
 // Check if migration was applied
-const exists = await ominipg.query(`
+const exists = await ominipg.query(
+  `
   SELECT * FROM migrations WHERE name = $1
-`, ["add_users_table"]);
+`,
+  ["add_users_table"],
+);
 
 if (exists.rows.length === 0) {
   // Apply migration
   await ominipg.query(`CREATE TABLE users (...)`);
-  
+
   // Record migration
-  await ominipg.query(`
+  await ominipg.query(
+    `
     INSERT INTO migrations (name) VALUES ($1)
-  `, ["add_users_table"]);
+  `,
+    ["add_users_table"],
+  );
 }
 ```
 
@@ -509,18 +553,19 @@ const crudSchemas = defineSchema({
       type: "object",
       properties: {
         id: { type: "string" },
-        name: { type: "string" }
-      }
+        name: { type: "string" },
+      },
     },
-    keys: [{ property: "id" }]
-  }
+    keys: [{ property: "id" }],
+  },
 });
 
 // Connect with CRUD schemas
 const ominipg = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   schemas: crudSchemas,
-  schemaSQL: [/* ... */]
+  schemaSQL: [/* ... */],
 });
 
 // Create Drizzle adapter
@@ -535,7 +580,7 @@ const posts = await db.select()
 // Use CRUD API for simple operations
 const category = await ominipg.crud.categories.create({
   id: "tech",
-  name: "Technology"
+  name: "Technology",
 });
 
 // Both use the same underlying connection!
@@ -566,7 +611,7 @@ try {
 
 ```typescript
 // Drizzle automatically uses parameterized queries
-const getUserById = (id: number) => 
+const getUserById = (id: number) =>
   db.select().from(users).where(eq(users.id, id));
 
 const user1 = await getUserById(1);
@@ -581,7 +626,7 @@ import { sql } from "npm:drizzle-orm";
 // Custom SQL expressions
 await db.select({
   id: users.id,
-  upperName: sql`UPPER(${users.name})`
+  upperName: sql`UPPER(${users.name})`,
 }).from(users);
 
 // Custom WHERE clause
@@ -590,9 +635,12 @@ await db.select()
   .where(sql`${users.age} > 18 AND ${users.status} = 'active'`);
 
 // Raw SQL fallback
-const results = await db.queryRaw(`
+const results = await db.queryRaw(
+  `
   SELECT * FROM users WHERE age > $1
-`, [18]);
+`,
+  [18],
+);
 ```
 
 ### Type Inference
@@ -605,7 +653,7 @@ type NewUser = typeof users.$inferInsert;
 // Infer from query results
 const query = db.select({
   id: users.id,
-  name: users.name
+  name: users.name,
 }).from(users);
 
 type QueryResult = Awaited<typeof query>[number];
@@ -622,7 +670,7 @@ type QueryResult = Awaited<typeof query>[number];
 // ✅ Good - only select needed columns
 const names = await db.select({
   id: users.id,
-  name: users.name
+  name: users.name,
 }).from(users);
 
 // ❌ Less efficient - selects all columns
@@ -636,8 +684,8 @@ const users = await db.select().from(users);
 schemaSQL: [
   `CREATE INDEX idx_users_email ON users(email)`,
   `CREATE INDEX idx_posts_author_id ON posts(author_id)`,
-  `CREATE INDEX idx_posts_created_at ON posts(created_at)`
-]
+  `CREATE INDEX idx_posts_created_at ON posts(created_at)`,
+];
 ```
 
 ### 3. Batch Operations
@@ -647,7 +695,7 @@ schemaSQL: [
 await db.insert(users).values([
   { name: "Alice" },
   { name: "Bob" },
-  { name: "Charlie" }
+  { name: "Charlie" },
 ]);
 
 // ❌ Slow - multiple queries
@@ -680,8 +728,15 @@ const postsWithAuthors = await db.select()
 ```typescript
 import { Ominipg, withDrizzle } from "jsr:@oxian/ominipg";
 import { drizzle } from "npm:drizzle-orm/pg-proxy";
-import { pgTable, serial, text, integer, timestamp, boolean } from "npm:drizzle-orm/pg-core";
-import { eq, gt, and, desc } from "npm:drizzle-orm";
+import {
+  boolean,
+  integer,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+} from "npm:drizzle-orm/pg-core";
+import { and, desc, eq, gt } from "npm:drizzle-orm";
 
 // 1. Define schema
 const users = pgTable("users", {
@@ -689,7 +744,7 @@ const users = pgTable("users", {
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   age: integer("age"),
-  createdAt: timestamp("created_at").defaultNow()
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 const posts = pgTable("posts", {
@@ -698,7 +753,7 @@ const posts = pgTable("posts", {
   title: text("title").notNull(),
   body: text("body").notNull(),
   published: boolean("published").default(false),
-  createdAt: timestamp("created_at").defaultNow()
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 const schema = { users, posts };
@@ -706,6 +761,7 @@ const schema = { users, posts };
 // 2. Connect
 const ominipg = await Ominipg.connect({
   url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
   schemaSQL: [
     `CREATE TABLE users (
       id SERIAL PRIMARY KEY,
@@ -721,8 +777,8 @@ const ominipg = await Ominipg.connect({
       body TEXT NOT NULL,
       published BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMPTZ DEFAULT NOW()
-    )`
-  ]
+    )`,
+  ],
 });
 
 const db = withDrizzle(ominipg, drizzle, schema);
@@ -731,7 +787,7 @@ const db = withDrizzle(ominipg, drizzle, schema);
 const [user] = await db.insert(users).values({
   name: "Alice",
   email: "alice@example.com",
-  age: 25
+  age: 25,
 }).returning();
 
 await db.insert(posts).values([
@@ -739,14 +795,14 @@ await db.insert(posts).values([
     authorId: user.id,
     title: "Hello World",
     body: "My first post!",
-    published: true
+    published: true,
   },
   {
     authorId: user.id,
     title: "Drizzle is Great",
     body: "I love type safety!",
-    published: true
-  }
+    published: true,
+  },
 ]);
 
 // 4. Query with joins
@@ -754,12 +810,12 @@ const publishedPosts = await db.select({
   postId: posts.id,
   postTitle: posts.title,
   authorName: users.name,
-  authorEmail: users.email
+  authorEmail: users.email,
 })
-.from(posts)
-.innerJoin(users, eq(posts.authorId, users.id))
-.where(eq(posts.published, true))
-.orderBy(desc(posts.createdAt));
+  .from(posts)
+  .innerJoin(users, eq(posts.authorId, users.id))
+  .where(eq(posts.published, true))
+  .orderBy(desc(posts.createdAt));
 
 console.log(publishedPosts);
 
@@ -783,5 +839,3 @@ await db.close();
 - [API Reference](./API.md)
 - [CRUD API Guide](./CRUD.md)
 - [Examples](../examples/with-drizzle-simple.ts)
-
-

@@ -1,14 +1,17 @@
 import {
-  LogicalReplicationService,
-  PgoutputPlugin,
-} from "npm:pg-logical-replication";
-import { mainDb, meta, recentlyPushed, syncPool } from "../db.ts";
+  loadLogicalReplicationModule,
+  mainDb,
+  meta,
+  recentlyPushed,
+  syncPool,
+} from "../db.ts";
 import { createTableFromRemote, ensureMeta } from "../schema.ts";
 import { ident } from "../utils.ts";
 import { EDGE_ID, LWW_COL } from "../bootstrap.ts";
 import type { InitMsg } from "../../shared/types.ts";
+import type { LogicalReplicationServiceLike } from "../../shared/types.ts";
 
-let repl: LogicalReplicationService | null = null;
+let repl: LogicalReplicationServiceLike | null = null;
 
 async function localUpsert(table: string, row: Record<string, unknown>) {
   const m = meta.get(table)!;
@@ -199,6 +202,8 @@ export async function startPuller(cfg: InitMsg) {
 
   const connectionString = cfg.syncUrl || syncPool?.options?.connectionString ||
     "";
+  const { LogicalReplicationService, PgoutputPlugin } =
+    await loadLogicalReplicationModule();
   repl = new LogicalReplicationService({ connectionString });
 
   // --- FIX: Run subscription as a background process ---

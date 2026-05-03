@@ -1,9 +1,16 @@
-/// <reference lib="deno.unstable" />
 import { detectDatabaseType, getRssMb } from "./utils.ts";
+import { ensureDirectory, pathExistsAsDirectory } from "../runtime/mod.ts";
 import type {
   InitMsg,
   PGliteConfig,
   PGliteExtensionsMap,
+  PGliteModule,
+  PGliteProvider,
+  PgLogicalReplicationModule,
+  PgModule,
+  PgPool,
+  PgPoolClient,
+  PgProvider,
 } from "../shared/types.ts";
 
 /*───────────────── Types ──────────────────*/
@@ -21,18 +28,11 @@ export let mainDb: DatabaseClient;
 export let mainDbType: "pglite" | "postgres";
 export const activePgliteExtensions = new Set<string>();
 
-// Minimal pg types to avoid importing npm modules at top-level
-export interface PgPoolClient {
-  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
-  release(): void;
-}
-export interface PgPool {
-  connect(): Promise<PgPoolClient>;
-  end(): Promise<void>;
-  options?: { connectionString?: string };
-}
+export type { PgPool, PgPoolClient } from "../shared/types.ts";
 
 export let syncPool: PgPool | null = null;
+let pgliteProvider: PGliteProvider | undefined;
+let pgProvider: PgProvider | undefined;
 
 /**
  * In-memory metadata cache for table schemas (PKs, columns).
@@ -54,8 +54,8 @@ export const recentlyPushed = new Map<
 // Minimal PGlite interface
 interface PGliteLike {
   query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
-  exec(sql: string): Promise<void>;
-  listen(channel: string, callback: () => void): Promise<void>;
+  exec(sql: string): Promise<unknown>;
+  listen(channel: string, callback: () => void): Promise<unknown>;
   close(): Promise<void>;
 }
 
@@ -79,55 +79,135 @@ class PGliteAdapter implements DatabaseClient {
   }
 }
 
+async function importModule<T>(specifier: string): Promise<T> {
+  return await import(specifier) as T;
+}
+
+function engineLoadError(
+  engine: "pglite" | "pg" | "pg-logical-replication",
+  error: unknown,
+) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (engine === "pglite") {
+    return new Error(
+      `Failed to load PGlite provider from "@electric-sql/pglite": ${message}\n\n` +
+        `For Deno, add PGlite to your deno.json import map:\n` +
+        `{\n` +
+        `  "imports": {\n` +
+        `    "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.4"\n` +
+        `  }\n` +
+        `}\n\n` +
+        `For Node.js, install the optional peer dependency: npm install @electric-sql/pglite`,
+    );
+  }
+  if (engine === "pg-logical-replication") {
+    return new Error(
+      `Failed to load pg-logical-replication provider: ${message}\n\n` +
+        `For Deno, add it to your deno.json import map:\n` +
+        `{\n` +
+        `  "imports": {\n` +
+        `    "pg-logical-replication": "npm:pg-logical-replication@2.4.0"\n` +
+        `  }\n` +
+        `}\n\n` +
+        `For Node.js, install the optional peer dependency: npm install pg-logical-replication`,
+    );
+  }
+  return new Error(
+    `Failed to load PostgreSQL provider from "pg": ${message}\n\n` +
+      `For Deno, add pg to your deno.json import map:\n` +
+      `{\n` +
+      `  "imports": {\n` +
+      `    "pg": "npm:pg@8.16.3"\n` +
+      `  }\n` +
+      `}\n\n` +
+      `For Node.js, install the optional peer dependency: npm install pg`,
+  );
+}
+
+async function loadPGliteModule(
+  provider?: PGliteProvider,
+): Promise<PGliteModule> {
+  try {
+    if (provider?.loadPGlite) {
+      return await provider.loadPGlite();
+    }
+    if (provider?.moduleSpecifier) {
+      return await importModule<PGliteModule>(provider.moduleSpecifier);
+    }
+  } catch (error) {
+    throw engineLoadError("pglite", error);
+  }
+  throw new Error(
+    "PGlite connections require a pgliteProvider. Import createPGliteProvider from '@oxian/ominipg/pglite' (or 'jsr:@oxian/ominipg/pglite' in Deno) and pass it to Ominipg.connect().",
+  );
+}
+
+async function loadPGliteExtension(
+  provider: PGliteProvider | undefined,
+  name: string,
+): Promise<Record<string, unknown>> {
+  if (provider?.loadExtension) {
+    return await provider.loadExtension(name);
+  }
+  const specifier = provider?.extensionSpecifiers?.[name];
+  if (specifier) {
+    return await importModule<Record<string, unknown>>(specifier);
+  }
+  throw new Error(`Unsupported PGlite extension: ${name}`);
+}
+
+async function loadPgModule(provider?: PgProvider): Promise<PgModule> {
+  try {
+    if (provider?.loadPg) {
+      return await provider.loadPg();
+    }
+    if (provider?.moduleSpecifier) {
+      return await importModule<PgModule>(provider.moduleSpecifier);
+    }
+  } catch (error) {
+    throw engineLoadError("pg", error);
+  }
+  throw new Error(
+    "PostgreSQL connections require a pgProvider. Import createPgProvider from '@oxian/ominipg/pg' (or 'jsr:@oxian/ominipg/pg' in Deno) and pass it to Ominipg.connect().",
+  );
+}
+
+export async function loadLogicalReplicationModule(): Promise<
+  PgLogicalReplicationModule
+> {
+  try {
+    if (pgProvider?.loadLogicalReplication) {
+      return await pgProvider.loadLogicalReplication();
+    }
+    if (pgProvider?.logicalReplicationModuleSpecifier) {
+      return await importModule<PgLogicalReplicationModule>(
+        pgProvider.logicalReplicationModuleSpecifier,
+      );
+    }
+  } catch (error) {
+    throw engineLoadError("pg-logical-replication", error);
+  }
+  throw new Error(
+    "Sync requires pgProvider.loadLogicalReplication or logicalReplicationModuleSpecifier.",
+  );
+}
+
 /**
  * Dynamically imports PGlite extensions based on their names
  */
 async function loadExtensions(
+  provider: PGliteProvider | undefined,
   extensionNames: string[],
   logMetrics?: boolean,
 ): Promise<PGliteExtensionsMap> {
   const extensions: PGliteExtensionsMap = {};
 
-  // Map of extension names to their import paths
-  const extensionPaths: Record<string, string> = {
-    // Main package extensions
-    "vector": "vector",
-    "live": "live",
-
-    // Contrib extensions
-    "uuid_ossp": "contrib/uuid_ossp",
-    "amcheck": "contrib/amcheck",
-    "auto_explain": "contrib/auto_explain",
-    "bloom": "contrib/bloom",
-    "btree_gin": "contrib/btree_gin",
-    "btree_gist": "contrib/btree_gist",
-    "citext": "contrib/citext",
-    "cube": "contrib/cube",
-    "earthdistance": "contrib/earthdistance",
-    "fuzzystrmatch": "contrib/fuzzystrmatch",
-    "hstore": "contrib/hstore",
-    "isn": "contrib/isn",
-    "lo": "contrib/lo",
-    "ltree": "contrib/ltree",
-    "pg_trgm": "contrib/pg_trgm",
-    "seg": "contrib/seg",
-    "tablefunc": "contrib/tablefunc",
-    "tcn": "contrib/tcn",
-    "tsm_system_rows": "contrib/tsm_system_rows",
-    "tsm_system_time": "contrib/tsm_system_time",
-  };
-
   for (const extensionName of extensionNames) {
     try {
-      const importPath = extensionPaths[extensionName];
-      if (!importPath) {
-        console.warn(`⚠ Unknown PGlite extension: ${extensionName}`);
-        continue;
-      }
-
       const before = getRssMb();
-      const extensionModule = await import(
-        `npm:@electric-sql/pglite@0.3.4/${importPath}`
+      const extensionModule = await loadPGliteExtension(
+        provider,
+        extensionName,
       );
       // The extension is typically exported with the same name as the module
       const resolved = extensionModule[extensionName] ??
@@ -146,7 +226,19 @@ async function loadExtensions(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(
-        `⚠ Failed to load PGlite extension "${extensionName}": ${message}`,
+        `⚠ Failed to load PGlite extension "${extensionName}": ${message}\n` +
+          `For Deno, map the extension subpath in deno.json, for example:\n` +
+          `{\n` +
+          `  "imports": {\n` +
+          `    "${
+            provider?.extensionSpecifiers?.[extensionName] ?? extensionName
+          }": ` +
+          `"npm:@electric-sql/pglite@0.3.4/${
+            (provider?.extensionSpecifiers?.[extensionName] ?? extensionName)
+              .replace(/^@electric-sql\/pglite\/?/, "")
+          }"\n` +
+          `  }\n` +
+          `}`,
       );
     }
   }
@@ -196,10 +288,11 @@ async function initializePGlite(
   extensionNames: string[] = [],
   logMetrics?: boolean,
   pgliteConfig?: PGliteConfig,
+  provider?: PGliteProvider,
 ): Promise<DatabaseClient> {
-  const { PGlite } = await import("npm:@electric-sql/pglite@0.3.4");
+  const { PGlite } = await loadPGliteModule(provider);
   const extensions = extensionNames.length > 0
-    ? await loadExtensions(extensionNames, logMetrics)
+    ? await loadExtensions(provider, extensionNames, logMetrics)
     : {};
   const mergedConfig = mergePGliteConfig(pgliteConfig, extensions);
   const loadedExtensionNames = Object.keys(extensions);
@@ -231,17 +324,11 @@ async function initializePGlite(
 
   const dbPath = url.replace("file://", "");
   const before = getRssMb();
-  let isExistingDb = false;
-  try {
-    const stat = await Deno.stat(dbPath);
-    isExistingDb = stat.isDirectory;
-  } catch (_) {
-    // Directory doesn't exist — fresh database
-  }
+  const isExistingDb = await pathExistsAsDirectory(dbPath);
   try {
     const slash = dbPath.lastIndexOf("/");
     if (slash > 0) {
-      await Deno.mkdir(dbPath.slice(0, slash), { recursive: true });
+      await ensureDirectory(dbPath.slice(0, slash));
     }
   } catch (_) {
     // Ignore mkdir errors
@@ -261,14 +348,27 @@ async function initializePGlite(
         // Extensions are already persisted from the first run. Record
         // them as active so DDL CREATE EXTENSION statements are skipped.
         const sqlNames: Record<string, string> = {
-          "uuid_ossp": "uuid-ossp", "vector": "vector", "live": "live",
-          "amcheck": "amcheck", "auto_explain": "auto_explain",
-          "bloom": "bloom", "btree_gin": "btree_gin",
-          "btree_gist": "btree_gist", "citext": "citext", "cube": "cube",
-          "earthdistance": "earthdistance", "fuzzystrmatch": "fuzzystrmatch",
-          "hstore": "hstore", "isn": "isn", "lo": "lo", "ltree": "ltree",
-          "pg_trgm": "pg_trgm", "seg": "seg", "tablefunc": "tablefunc",
-          "tcn": "tcn", "tsm_system_rows": "tsm_system_rows",
+          "uuid_ossp": "uuid-ossp",
+          "vector": "vector",
+          "live": "live",
+          "amcheck": "amcheck",
+          "auto_explain": "auto_explain",
+          "bloom": "bloom",
+          "btree_gin": "btree_gin",
+          "btree_gist": "btree_gist",
+          "citext": "citext",
+          "cube": "cube",
+          "earthdistance": "earthdistance",
+          "fuzzystrmatch": "fuzzystrmatch",
+          "hstore": "hstore",
+          "isn": "isn",
+          "lo": "lo",
+          "ltree": "ltree",
+          "pg_trgm": "pg_trgm",
+          "seg": "seg",
+          "tablefunc": "tablefunc",
+          "tcn": "tcn",
+          "tsm_system_rows": "tsm_system_rows",
           "tsm_system_time": "tsm_system_time",
         };
         activatedSqlNames = loadedExtensionNames.map(
@@ -422,8 +522,11 @@ class PostgresAdapter implements DatabaseClient {
   }
 }
 
-async function initializePostgreSQL(url: string): Promise<DatabaseClient> {
-  const pg = await import("npm:pg@8.16.3");
+async function initializePostgreSQL(
+  url: string,
+  provider?: PgProvider,
+): Promise<DatabaseClient> {
+  const pg = await loadPgModule(provider);
   const pool = new pg.Pool({ connectionString: url, max: 5 });
   const client = await pool.connect();
   try {
@@ -440,6 +543,8 @@ async function initializePostgreSQL(url: string): Promise<DatabaseClient> {
  * Initializes the main and sync database connections.
  */
 export async function initConnections(cfg: InitMsg) {
+  pgliteProvider = cfg.pgliteProvider;
+  pgProvider = cfg.pgProvider;
   mainDbType = detectDatabaseType(cfg.url);
   if (mainDbType === "pglite") {
     mainDb = await initializePGlite(
@@ -447,10 +552,11 @@ export async function initConnections(cfg: InitMsg) {
       cfg.pgliteExtensions ?? [],
       cfg.logMetrics,
       cfg.pgliteConfig,
+      pgliteProvider,
     );
   } else {
     activePgliteExtensions.clear();
-    mainDb = await initializePostgreSQL(cfg.url);
+    mainDb = await initializePostgreSQL(cfg.url, pgProvider);
   }
 
   if (cfg.syncUrl) {
@@ -459,7 +565,7 @@ export async function initConnections(cfg: InitMsg) {
         "syncUrl must be a PostgreSQL connection string (postgres://)",
       );
     }
-    const pg = await import("npm:pg@8.16.3");
+    const pg = await loadPgModule(pgProvider);
     syncPool = new pg.Pool({ connectionString: cfg.syncUrl, max: 1 });
   }
 }

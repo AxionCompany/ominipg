@@ -4,10 +4,12 @@
  * This example demonstrates how to use PGlite extensions with Ominipg.
  * Extensions are dynamically loaded and included when using PGlite (not PostgreSQL).
  *
- * Run this with: deno run --allow-all examples/pglite-extensions.ts
+ * Run this with:
+ * deno run --allow-all --config deno.test.json examples/pglite-extensions.ts
  */
 
 import { Ominipg } from "../src/client/index.ts";
+import { createPGliteProvider } from "../src/providers/pglite.ts";
 
 console.log("🔌 Ominipg PGlite Extensions Demo\n");
 
@@ -16,9 +18,10 @@ console.log("📦 Loading PGlite with extensions...");
 const db = await Ominipg.connect({
   "logMetrics": true,
   url: ":memory:", // Use in-memory PGlite database
+  pgliteProvider: createPGliteProvider(),
   // pgliteExtensions: ["uuid_ossp", "vector"], // Load UUID and vector extensions
   pgliteConfig: {
-    initialMemory:  1024 * 256 * 80,
+    initialMemory: 1024 * 256 * 80,
   },
 
   schemaSQL: [
@@ -203,7 +206,10 @@ if (uuidAvailable) {
       console.log(`    ${i + 1}: ${result.rows[0].uuid}`);
     }
   } catch (error) {
-    console.log("✗ Some UUID functions not available:", (error as Error).message);
+    console.log(
+      "✗ Some UUID functions not available:",
+      (error as Error).message,
+    );
   }
 } else {
   console.log(
@@ -254,8 +260,14 @@ orders.rows.forEach((order) => {
 // 9. Show diagnostic info
 console.log("\n🔧 Database diagnostic info:");
 const info = await db.getDiagnosticInfo();
-console.log("Database type:", (info as { mainDatabase: { type: string } }).mainDatabase.type);
-console.log("Tracked tables:", (info as { trackedTables: string[] }).trackedTables);
+console.log(
+  "Database type:",
+  (info as { mainDatabase: { type: string } }).mainDatabase.type,
+);
+console.log(
+  "Tracked tables:",
+  (info as { trackedTables: string[] }).trackedTables,
+);
 
 // 10. Summary
 console.log("\n📊 Extension Status Summary:");
