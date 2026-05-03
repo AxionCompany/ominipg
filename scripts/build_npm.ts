@@ -23,10 +23,11 @@ await emptyDir(outDir);
 await build({
   entryPoints: [
     { name: ".", path: "./src/client/index.ts" },
+    { name: "./auto", path: "./src/auto.ts" },
     { name: "./crud", path: "./src/client/crud/index.ts" },
     { name: "./pglite", path: "./src/providers/pglite.ts" },
     { name: "./pg", path: "./src/providers/pg.ts" },
-    { name: "./_worker", path: "./src/worker/index.node.ts" },
+    { name: "./worker", path: "./src/worker/index.node.ts" },
   ],
   outDir,
   scriptModule: false,
@@ -81,7 +82,6 @@ await build({
       dependencies?: Record<string, string>;
       exports?: Record<string, unknown>;
     };
-    delete packageJson.exports?.["./_worker"];
     delete packageJson.dependencies?.["@electric-sql/pglite"];
     delete packageJson.dependencies?.["pg"];
     delete packageJson.dependencies?.["pg-logical-replication"];

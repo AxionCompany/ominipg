@@ -116,6 +116,34 @@ const db = await Ominipg.connect({
 
 ## Connection Options
 
+### `autoConfigure(options)`
+
+Imports from `jsr:@oxian/ominipg/auto` or `@oxian/ominipg/auto`.
+
+Decorates regular connection options with the optional providers required by
+`url` and `syncUrl`. Existing custom `pgliteProvider` or `pgProvider` values are
+preserved.
+
+```typescript
+import { Ominipg } from "jsr:@oxian/ominipg";
+import { autoConfigure } from "jsr:@oxian/ominipg/auto";
+
+const db = await Ominipg.connect(autoConfigure({
+  url: dbUrl,
+  syncUrl: dbSyncUrl,
+  schemaSQL,
+}));
+```
+
+Provider selection:
+
+- `:memory:`, empty, or `file://...` URL: injects PGlite provider
+- `postgres://...` or `postgresql://...` URL: injects pg provider
+- local PGlite URL with PostgreSQL `syncUrl`: injects both providers
+
+`resolveAutoProviders(options)` is also exported for callers that only need the
+resolved provider objects.
+
 ### `OminipgConnectionOptions`
 
 Configuration object for database connections.

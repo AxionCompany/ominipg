@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import { strict as assert } from "node:assert";
 import { defineSchema, Ominipg } from "@oxian/ominipg";
+import { autoConfigure } from "@oxian/ominipg/auto";
 import { createPGliteProvider } from "@oxian/ominipg/pglite";
 import { createPgProvider } from "@oxian/ominipg/pg";
 
@@ -83,6 +84,19 @@ async function smokeFileWorker() {
   }
 }
 
+async function smokeAutoConfigure() {
+  const db = await Ominipg.connect(autoConfigure({
+    url: ":memory:",
+    useWorker: false,
+  }));
+  try {
+    const { rows } = await db.query("SELECT 4 AS auto_value");
+    assert.equal(rows[0].auto_value, 4);
+  } finally {
+    await db.close();
+  }
+}
+
 async function smokeDirectPostgres() {
   const url = process.env.DB_URL_PG;
   if (!url) return;
@@ -106,5 +120,6 @@ async function smokeDirectPostgres() {
 await smokeMemoryWorker();
 await smokeMemoryInProcess();
 await smokeFileWorker();
+await smokeAutoConfigure();
 await smokeDirectPostgres();
 console.log("npm Node smoke tests passed");

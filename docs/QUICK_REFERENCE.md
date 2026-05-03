@@ -14,6 +14,7 @@ engine import-map entries are required for the default providers.
 ```typescript
 // Full library
 import { Ominipg } from "jsr:@oxian/ominipg";
+import { autoConfigure } from "jsr:@oxian/ominipg/auto";
 import { createPgProvider } from "jsr:@oxian/ominipg/pg";
 import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
@@ -32,6 +33,7 @@ npm install @oxian/ominipg
 ```typescript
 // Full library
 import { Ominipg } from "@oxian/ominipg";
+import { autoConfigure } from "@oxian/ominipg/auto";
 import { createPgProvider } from "@oxian/ominipg/pg";
 import { createPGliteProvider } from "@oxian/ominipg/pglite";
 
@@ -44,6 +46,12 @@ import { createCrudApi, defineSchema } from "@oxian/ominipg/crud";
 ## Connection
 
 ```typescript
+// Auto-configure providers from url/syncUrl
+const db = await Ominipg.connect(autoConfigure({
+  url: dbUrl,
+  syncUrl: dbSyncUrl,
+}));
+
 // In-memory database
 const db = await Ominipg.connect({
   url: ":memory:",

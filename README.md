@@ -46,6 +46,7 @@ engine import-map entries are required for the default providers.
 ```typescript
 // Full library
 import { Ominipg } from "jsr:@oxian/ominipg";
+import { autoConfigure } from "jsr:@oxian/ominipg/auto";
 import { createPgProvider } from "jsr:@oxian/ominipg/pg";
 import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
@@ -64,6 +65,7 @@ npm install @oxian/ominipg
 ```typescript
 // Full library
 import { Ominipg } from "@oxian/ominipg";
+import { autoConfigure } from "@oxian/ominipg/auto";
 import { createPgProvider } from "@oxian/ominipg/pg";
 import { createPGliteProvider } from "@oxian/ominipg/pglite";
 
@@ -83,16 +85,30 @@ npm install pg pg-logical-replication
 
 ## 🚀 Quick Start
 
+### Auto-Configured Providers
+
+Use `autoConfigure()` when your app already has `url` and optional `syncUrl`
+strings and you want Ominipg to inject the right optional providers.
+
+```typescript
+import { Ominipg } from "jsr:@oxian/ominipg";
+import { autoConfigure } from "jsr:@oxian/ominipg/auto";
+
+const db = await Ominipg.connect(autoConfigure({
+  url: dbUrl, // ":memory:", "file://...", or "postgresql://..."
+  syncUrl: dbSyncUrl, // optional PostgreSQL sync target
+}));
+```
+
 ### In-Memory Database with Raw SQL
 
 ```typescript
 import { Ominipg } from "jsr:@oxian/ominipg";
-import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
+import { autoConfigure } from "jsr:@oxian/ominipg/auto";
 
 // Create an in-memory database
-const db = await Ominipg.connect({
+const db = await Ominipg.connect(autoConfigure({
   url: ":memory:",
-  pgliteProvider: createPGliteProvider(),
   schemaSQL: [`
     CREATE TABLE users (
       id SERIAL PRIMARY KEY,
@@ -100,7 +116,7 @@ const db = await Ominipg.connect({
       email TEXT UNIQUE
     )
   `],
-});
+}));
 
 // Execute queries
 await db.query("INSERT INTO users (name, email) VALUES ($1, $2)", [
