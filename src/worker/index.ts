@@ -1,4 +1,4 @@
-/// <reference lib="deno.worker" />
+
 
 import type { ResponseMsg, WorkerMsg } from "../shared/types.ts";
 import { handleWorkerMessage } from "./handler.ts";
