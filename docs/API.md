@@ -2,32 +2,9 @@
 
 Complete API documentation for Ominipg.
 
-Ominipg supports Deno and Node.js 22+. The npm package is ESM-only.
-
-In Deno, database engines are resolved from the application import map. Add the
-engines you use to `deno.json`:
-
-```json
-{
-  "imports": {
-    "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.4",
-    "pg": "npm:pg@8.16.3",
-    "pg-logical-replication": "npm:pg-logical-replication@2.4.0"
-  }
-}
-```
-
-When using PGlite extensions in Deno, map the extension subpaths you enable, for
-example:
-
-```json
-{
-  "imports": {
-    "@electric-sql/pglite/contrib/uuid_ossp": "npm:@electric-sql/pglite@0.3.4/contrib/uuid_ossp",
-    "@electric-sql/pglite/vector": "npm:@electric-sql/pglite@0.3.4/vector"
-  }
-}
-```
+Ominipg supports Deno and Node.js 22+. The npm package is ESM-only. The built-in
+Deno providers load compatible npm engine versions lazily; Node.js apps install
+the engines they use as optional peer dependencies.
 
 ---
 

@@ -16,7 +16,7 @@ try {
 
   const packages = [
     tarballPath,
-    "@electric-sql/pglite@0.3.4",
+    "@electric-sql/pglite@0.4.5",
   ];
   if (Deno.env.get("DB_URL_PG")) {
     packages.push("pg@8.16.3", "pg-logical-replication@2.4.0");

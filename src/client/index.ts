@@ -176,15 +176,17 @@ function toWorkerPgProvider(provider: PgProvider | undefined) {
 
 function directPgLoadError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  const globals = globalThis as {
+    Deno?: unknown;
+    process?: { versions?: { node?: string } };
+  };
+  const hint = globals.process?.versions?.node
+    ? "Install the optional peer dependency in your app: npm install pg"
+    : globals.Deno
+    ? 'The built-in Deno provider loads "npm:pg@^8.16.3". If you passed a custom provider with bare specifiers, change it to an npm: specifier or add an import-map entry in the consuming app.'
+    : 'Install or map "pg", or pass a custom pgProvider.';
   return new Error(
-    `Failed to load PostgreSQL provider from "pg": ${message}\n\n` +
-      `For Deno, add pg to your deno.json import map:\n` +
-      `{\n` +
-      `  "imports": {\n` +
-      `    "pg": "npm:pg@8.16.3"\n` +
-      `  }\n` +
-      `}\n\n` +
-      `For Node.js, install the optional peer dependency: npm install pg`,
+    `Failed to load PostgreSQL provider: ${message}\n\n${hint}`,
   );
 }
 
@@ -619,7 +621,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       return;
     }
     const message: Omit<CloseMsg, "reqId"> = { type: "close" };
-    this.requests!.post(message);
+    await this.requests!.request<void>(message);
     await this.worker!.terminate();
     this.emit("close");
   }

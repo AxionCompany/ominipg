@@ -8,28 +8,8 @@ Fast lookup for common Ominipg operations.
 
 ### Deno
 
-Add the engine imports your app uses:
-
-```json
-{
-  "imports": {
-    "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.4",
-    "pg": "npm:pg@8.16.3",
-    "pg-logical-replication": "npm:pg-logical-replication@2.4.0"
-  }
-}
-```
-
-For PGlite extensions, also map the extension subpaths you enable:
-
-```json
-{
-  "imports": {
-    "@electric-sql/pglite/contrib/uuid_ossp": "npm:@electric-sql/pglite@0.3.4/contrib/uuid_ossp",
-    "@electric-sql/pglite/vector": "npm:@electric-sql/pglite@0.3.4/vector"
-  }
-}
-```
+The built-in Deno providers load compatible npm engine versions lazily. No
+engine import-map entries are required for the default providers.
 
 ```typescript
 // Full library

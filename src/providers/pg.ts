@@ -2,10 +2,10 @@ import type { PgProvider } from "../shared/types.ts";
 
 export function createPgProvider(): PgProvider {
   return {
-    moduleSpecifier: "pg",
-    logicalReplicationModuleSpecifier: "pg-logical-replication",
-    loadPg: () => import("pg"),
-    loadLogicalReplication: () => import("pg-logical-replication"),
+    moduleSpecifier: "npm:pg@^8.16.3",
+    logicalReplicationModuleSpecifier: "npm:pg-logical-replication@^2.4.0",
+    loadPg: () => import("npm:pg@^8.16.3"),
+    loadLogicalReplication: () => import("npm:pg-logical-replication@^2.4.0"),
   };
 }
 

@@ -40,29 +40,8 @@ favorite ORM—all with full TypeScript type safety.
 
 ### Deno
 
-Ominipg keeps database engines as application-owned imports. Add the engines you
-use to your `deno.json` import map:
-
-```json
-{
-  "imports": {
-    "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.4",
-    "pg": "npm:pg@8.16.3",
-    "pg-logical-replication": "npm:pg-logical-replication@2.4.0"
-  }
-}
-```
-
-When using PGlite extensions in Deno, map the extension subpaths you enable:
-
-```json
-{
-  "imports": {
-    "@electric-sql/pglite/contrib/uuid_ossp": "npm:@electric-sql/pglite@0.3.4/contrib/uuid_ossp",
-    "@electric-sql/pglite/vector": "npm:@electric-sql/pglite@0.3.4/vector"
-  }
-}
-```
+The built-in Deno providers load compatible npm engine versions lazily. No
+engine import-map entries are required for the default providers.
 
 ```typescript
 // Full library

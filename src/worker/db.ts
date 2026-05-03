@@ -83,6 +83,47 @@ async function importModule<T>(specifier: string): Promise<T> {
   return await import(specifier) as T;
 }
 
+function runtimeName(): "deno" | "node" | "unknown" {
+  const globals = globalThis as {
+    Deno?: unknown;
+    process?: { versions?: { node?: string } };
+  };
+  if (globals.Deno) return "deno";
+  if (globals.process?.versions?.node) return "node";
+  return "unknown";
+}
+
+function installHint(
+  engine: "pglite" | "pg" | "pg-logical-replication",
+) {
+  const runtime = runtimeName();
+  if (engine === "pglite") {
+    if (runtime === "node") {
+      return "Install the optional peer dependency in your app: npm install @electric-sql/pglite";
+    }
+    if (runtime === "deno") {
+      return 'The built-in Deno provider loads "npm:@electric-sql/pglite@^0.4.5". If you passed a custom provider with bare specifiers, change it to an npm: specifier or add an import-map entry in the consuming app.';
+    }
+    return 'Install or map "@electric-sql/pglite", or pass a custom pgliteProvider.';
+  }
+  if (engine === "pg-logical-replication") {
+    if (runtime === "node") {
+      return "Install the optional peer dependency in your app: npm install pg-logical-replication";
+    }
+    if (runtime === "deno") {
+      return 'The built-in Deno provider loads "npm:pg-logical-replication@^2.4.0". If you passed a custom provider with bare specifiers, change it to an npm: specifier or add an import-map entry in the consuming app.';
+    }
+    return 'Install or map "pg-logical-replication", or pass a custom pgProvider.';
+  }
+  if (runtime === "node") {
+    return "Install the optional peer dependency in your app: npm install pg";
+  }
+  if (runtime === "deno") {
+    return 'The built-in Deno provider loads "npm:pg@^8.16.3". If you passed a custom provider with bare specifiers, change it to an npm: specifier or add an import-map entry in the consuming app.';
+  }
+  return 'Install or map "pg", or pass a custom pgProvider.';
+}
+
 function engineLoadError(
   engine: "pglite" | "pg" | "pg-logical-replication",
   error: unknown,
@@ -90,37 +131,18 @@ function engineLoadError(
   const message = error instanceof Error ? error.message : String(error);
   if (engine === "pglite") {
     return new Error(
-      `Failed to load PGlite provider from "@electric-sql/pglite": ${message}\n\n` +
-        `For Deno, add PGlite to your deno.json import map:\n` +
-        `{\n` +
-        `  "imports": {\n` +
-        `    "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.4"\n` +
-        `  }\n` +
-        `}\n\n` +
-        `For Node.js, install the optional peer dependency: npm install @electric-sql/pglite`,
+      `Failed to load PGlite provider: ${message}\n\n${installHint("pglite")}`,
     );
   }
   if (engine === "pg-logical-replication") {
     return new Error(
-      `Failed to load pg-logical-replication provider: ${message}\n\n` +
-        `For Deno, add it to your deno.json import map:\n` +
-        `{\n` +
-        `  "imports": {\n` +
-        `    "pg-logical-replication": "npm:pg-logical-replication@2.4.0"\n` +
-        `  }\n` +
-        `}\n\n` +
-        `For Node.js, install the optional peer dependency: npm install pg-logical-replication`,
+      `Failed to load pg-logical-replication provider: ${message}\n\n${
+        installHint("pg-logical-replication")
+      }`,
     );
   }
   return new Error(
-    `Failed to load PostgreSQL provider from "pg": ${message}\n\n` +
-      `For Deno, add pg to your deno.json import map:\n` +
-      `{\n` +
-      `  "imports": {\n` +
-      `    "pg": "npm:pg@8.16.3"\n` +
-      `  }\n` +
-      `}\n\n` +
-      `For Node.js, install the optional peer dependency: npm install pg`,
+    `Failed to load PostgreSQL provider: ${message}\n\n${installHint("pg")}`,
   );
 }
 
@@ -227,18 +249,7 @@ async function loadExtensions(
       const message = error instanceof Error ? error.message : String(error);
       console.warn(
         `⚠ Failed to load PGlite extension "${extensionName}": ${message}\n` +
-          `For Deno, map the extension subpath in deno.json, for example:\n` +
-          `{\n` +
-          `  "imports": {\n` +
-          `    "${
-            provider?.extensionSpecifiers?.[extensionName] ?? extensionName
-          }": ` +
-          `"npm:@electric-sql/pglite@0.3.4/${
-            (provider?.extensionSpecifiers?.[extensionName] ?? extensionName)
-              .replace(/^@electric-sql\/pglite\/?/, "")
-          }"\n` +
-          `  }\n` +
-          `}`,
+          installHint("pglite"),
       );
     }
   }

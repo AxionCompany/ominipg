@@ -109,6 +109,7 @@ export type ResponseMsg =
   | { type: "exec-ok"; reqId: number; rows: unknown[] }
   | { type: "sync-ok"; reqId: number; pushed: number }
   | { type: "sync-sequences-ok"; reqId: number; synced: number }
+  | { type: "close-ok"; reqId: number }
   | {
     type: "diagnostic-ok";
     reqId: number;
@@ -178,4 +179,5 @@ export type DiagnosticMsg = {
  */
 export type CloseMsg = {
   type: "close";
+  reqId: number;
 };

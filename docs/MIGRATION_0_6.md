@@ -23,30 +23,9 @@ direct PostgreSQL, or sync.
 
 ### Deno
 
-Add the engine imports your app uses to `deno.json`. This is the Deno equivalent
-of installing optional peer dependencies in Node.js.
-
-```json
-{
-  "imports": {
-    "@electric-sql/pglite": "npm:@electric-sql/pglite@0.3.4",
-    "pg": "npm:pg@8.16.3",
-    "pg-logical-replication": "npm:pg-logical-replication@2.4.0"
-  }
-}
-```
-
-When using PGlite extensions in Deno, also map the extension subpaths you
-enable:
-
-```json
-{
-  "imports": {
-    "@electric-sql/pglite/contrib/uuid_ossp": "npm:@electric-sql/pglite@0.3.4/contrib/uuid_ossp",
-    "@electric-sql/pglite/vector": "npm:@electric-sql/pglite@0.3.4/vector"
-  }
-}
-```
+The built-in Deno providers load compatible npm engine versions lazily. No
+engine import-map entries are required unless you pass custom providers with
+bare specifiers.
 
 ```typescript
 import { Ominipg } from "jsr:@oxian/ominipg@0.6";
@@ -81,6 +60,15 @@ import { createPGliteProvider } from "@oxian/ominipg/pglite";
 ---
 
 ## PGlite Connections
+
+Ominipg 0.6.1+ defaults to PGlite `0.4.5` for Deno and declares
+`@electric-sql/pglite` `^0.4.5` as the optional npm peer for Node.js.
+
+PGlite's own upgrade guidance treats minor-version upgrades as potentially
+breaking for persisted PGlite data directories. Fresh `:memory:` databases and
+new `file://` databases should work normally, but existing PGlite `0.3.x`
+database files should be migrated with a dump/import flow before opening them
+with PGlite `0.4.x`.
 
 ### Before 0.6
 
@@ -254,7 +242,7 @@ In Deno, use `npm:` specifiers for worker-serializable custom providers:
 const db = await Ominipg.connect({
   url: ":memory:",
   pgliteProvider: {
-    moduleSpecifier: "npm:@electric-sql/pglite@0.3.4",
+    moduleSpecifier: "npm:@electric-sql/pglite@0.4.5",
   },
   useWorker: true,
 });

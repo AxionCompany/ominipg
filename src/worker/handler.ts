@@ -47,6 +47,7 @@ export async function handleWorkerMessage(
       }
       case "close": {
         await shutdown();
+        post({ type: "close-ok", reqId: msg.reqId });
         close();
         break;
       }

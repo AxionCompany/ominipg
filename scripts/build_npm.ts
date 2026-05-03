@@ -56,7 +56,7 @@ await build({
     },
     sideEffects: false,
     peerDependencies: {
-      "@electric-sql/pglite": "^0.3.4",
+      "@electric-sql/pglite": "^0.4.5",
       "pg": "^8.16.3",
       "pg-logical-replication": "^2.4.0",
     },
