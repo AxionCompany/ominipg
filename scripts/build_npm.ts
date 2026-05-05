@@ -38,6 +38,7 @@ await build({
   shims: {},
   mappings: {
     "./src/runtime/mod.ts": "./src/runtime/mod.node.ts",
+    "./src/auto.ts": "./src/auto.node.ts",
     "./src/providers/pglite.ts": "./src/providers/pglite.node.ts",
     "./src/providers/pg.ts": "./src/providers/pg.node.ts",
   },

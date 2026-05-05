@@ -1,8 +1,7 @@
 /**
  * @module
  *
- * Utilities for automatically selecting optional database providers from
- * Ominipg connection URLs.
+ * Node.js auto-provider descriptors for the npm package.
  */
 
 import type { OminipgConnectionOptions } from "./client/types.ts";
@@ -18,41 +17,41 @@ export type AutoConfiguredOptions<T extends OminipgConnectionOptions> =
   & AutoProviders;
 
 const pgliteExtensionSpecifiers: Record<string, string> = {
-  vector: "npm:@electric-sql/pglite@^0.4.5/vector",
-  live: "npm:@electric-sql/pglite@^0.4.5/live",
-  uuid_ossp: "npm:@electric-sql/pglite@^0.4.5/contrib/uuid_ossp",
-  amcheck: "npm:@electric-sql/pglite@^0.4.5/contrib/amcheck",
-  auto_explain: "npm:@electric-sql/pglite@^0.4.5/contrib/auto_explain",
-  bloom: "npm:@electric-sql/pglite@^0.4.5/contrib/bloom",
-  btree_gin: "npm:@electric-sql/pglite@^0.4.5/contrib/btree_gin",
-  btree_gist: "npm:@electric-sql/pglite@^0.4.5/contrib/btree_gist",
-  citext: "npm:@electric-sql/pglite@^0.4.5/contrib/citext",
-  cube: "npm:@electric-sql/pglite@^0.4.5/contrib/cube",
-  earthdistance: "npm:@electric-sql/pglite@^0.4.5/contrib/earthdistance",
-  fuzzystrmatch: "npm:@electric-sql/pglite@^0.4.5/contrib/fuzzystrmatch",
-  hstore: "npm:@electric-sql/pglite@^0.4.5/contrib/hstore",
-  isn: "npm:@electric-sql/pglite@^0.4.5/contrib/isn",
-  lo: "npm:@electric-sql/pglite@^0.4.5/contrib/lo",
-  ltree: "npm:@electric-sql/pglite@^0.4.5/contrib/ltree",
-  pg_trgm: "npm:@electric-sql/pglite@^0.4.5/contrib/pg_trgm",
-  seg: "npm:@electric-sql/pglite@^0.4.5/contrib/seg",
-  tablefunc: "npm:@electric-sql/pglite@^0.4.5/contrib/tablefunc",
-  tcn: "npm:@electric-sql/pglite@^0.4.5/contrib/tcn",
-  tsm_system_rows: "npm:@electric-sql/pglite@^0.4.5/contrib/tsm_system_rows",
-  tsm_system_time: "npm:@electric-sql/pglite@^0.4.5/contrib/tsm_system_time",
+  vector: "@electric-sql/pglite/vector",
+  live: "@electric-sql/pglite/live",
+  uuid_ossp: "@electric-sql/pglite/contrib/uuid_ossp",
+  amcheck: "@electric-sql/pglite/contrib/amcheck",
+  auto_explain: "@electric-sql/pglite/contrib/auto_explain",
+  bloom: "@electric-sql/pglite/contrib/bloom",
+  btree_gin: "@electric-sql/pglite/contrib/btree_gin",
+  btree_gist: "@electric-sql/pglite/contrib/btree_gist",
+  citext: "@electric-sql/pglite/contrib/citext",
+  cube: "@electric-sql/pglite/contrib/cube",
+  earthdistance: "@electric-sql/pglite/contrib/earthdistance",
+  fuzzystrmatch: "@electric-sql/pglite/contrib/fuzzystrmatch",
+  hstore: "@electric-sql/pglite/contrib/hstore",
+  isn: "@electric-sql/pglite/contrib/isn",
+  lo: "@electric-sql/pglite/contrib/lo",
+  ltree: "@electric-sql/pglite/contrib/ltree",
+  pg_trgm: "@electric-sql/pglite/contrib/pg_trgm",
+  seg: "@electric-sql/pglite/contrib/seg",
+  tablefunc: "@electric-sql/pglite/contrib/tablefunc",
+  tcn: "@electric-sql/pglite/contrib/tcn",
+  tsm_system_rows: "@electric-sql/pglite/contrib/tsm_system_rows",
+  tsm_system_time: "@electric-sql/pglite/contrib/tsm_system_time",
 };
 
 function createAutoPGliteProvider(): PGliteProvider {
   return {
-    moduleSpecifier: "npm:@electric-sql/pglite@^0.4.5",
+    moduleSpecifier: "@electric-sql/pglite",
     extensionSpecifiers: pgliteExtensionSpecifiers,
   };
 }
 
 function createAutoPgProvider(): PgProvider {
   return {
-    moduleSpecifier: "npm:pg@^8.16.3",
-    logicalReplicationModuleSpecifier: "npm:pg-logical-replication@^2.4.0",
+    moduleSpecifier: "pg",
+    logicalReplicationModuleSpecifier: "pg-logical-replication",
   };
 }
 
@@ -88,14 +87,6 @@ function validateAutoProviderUrls(url: string, syncUrl?: string) {
   }
 }
 
-/**
- * Resolves the optional providers required by a pair of Ominipg URLs.
- *
- * This helper intentionally does not import the PGlite or pg provider factory
- * modules, because those modules contain literal dynamic imports that Deno
- * compile must include. The returned descriptors are string-only, so engine
- * modules are loaded only by the runtime path that actually needs them.
- */
 export function resolveAutoProviders(
   options: Pick<
     OminipgConnectionOptions,
@@ -116,13 +107,6 @@ export function resolveAutoProviders(
   };
 }
 
-/**
- * Decorates regular Ominipg connection options with the provider factories
- * required by `url` and `syncUrl`.
- *
- * Existing custom providers are preserved. Missing `url` follows
- * `Ominipg.connect()` and is treated as `:memory:`.
- */
 export function autoConfigure<T extends OminipgConnectionOptions>(
   options: T,
 ): AutoConfiguredOptions<T> {
