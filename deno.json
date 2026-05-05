@@ -1,7 +1,7 @@
 {
   "name": "@oxian/ominipg",
   "description": "Ominipg is the flexible, all-in-one toolkit for PostgreSQL in Deno.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "author": "Ominipg",
   "license": "MIT",
   "exports": {
@@ -14,6 +14,11 @@
   },
   "tasks": {
     "build:npm": "deno run -A scripts/build_npm.ts",
+    "memory:deno": "deno run -A --v8-flags=--expose-gc experiments/memory/run_deno_compare.ts",
+    "memory:deno:matrix": "deno run -A --v8-flags=--expose-gc experiments/memory/run_deno_matrix.ts",
+    "memory:pglite:prepopulate": "deno run -A --v8-flags=--expose-gc experiments/memory/run_pglite_prepopulate.ts",
+    "memory:pglite:tune": "deno run -A --v8-flags=--expose-gc experiments/memory/run_pglite_tuning.ts",
+    "memory:node:pglite": "env PGLITE_NODE_MODULE_ROOT=./npm node --expose-gc experiments/memory/pglite_node.mjs",
     "test:deno": "deno test --allow-all",
     "test:npm-node": "deno task build:npm && deno run -A scripts/test_npm_node.ts"
   },

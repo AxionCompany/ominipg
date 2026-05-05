@@ -56,6 +56,7 @@ import { InProcessWorker } from "../worker/in_process.ts";
 import type {
   CloseMsg,
   DiagnosticMsg,
+  DumpDataDirMsg,
   ExecMsg,
   InitMsg,
   PgPool,
@@ -284,6 +285,32 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     this.worker = worker;
     this.requests = worker ? new RequestManager(worker, this) : undefined;
     this.pool = pool;
+  }
+
+  /**
+   * Prepares a file-backed PGlite database and closes it immediately.
+   *
+   * Use this in a setup or migration process so the memory-sensitive runtime
+   * process can open an existing `file://` database and avoid PGlite's first-run
+   * initdb path.
+   *
+   * @param options - Connection options for a PGlite `file://` database.
+   */
+  public static async prepare(
+    options: OminipgConnectionOptions,
+  ): Promise<void> {
+    const url = options.url ?? "";
+    if (!url.startsWith("file://")) {
+      throw new Error("Ominipg.prepare() requires a file:// PGlite URL.");
+    }
+    if (options.syncUrl) {
+      throw new Error("Ominipg.prepare() does not support syncUrl.");
+    }
+    const db = await Ominipg.connect({
+      ...options,
+      useWorker: options.useWorker ?? false,
+    });
+    await db.close();
   }
 
   /**
@@ -570,6 +597,31 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   }
 
   /**
+   * Dumps the active PGlite data directory as a Blob.
+   *
+   * Use the returned Blob with PGlite's `loadDataDir` option to restore the
+   * database in a later process. This is only available for PGlite connections.
+   */
+  public async dumpDataDir(): Promise<Blob> {
+    if (this.mode === "direct") {
+      throw new Error(
+        "dumpDataDir() is only available for PGlite connections.",
+      );
+    }
+    const message: Omit<DumpDataDirMsg, "reqId"> = { type: "dump-data-dir" };
+    const { dataDirBytes, dataDirType } = await this.requests!.request<{
+      dataDirBytes: Uint8Array;
+      dataDirType?: string;
+    }>(message, 120000);
+    const bytes = new Uint8Array(dataDirBytes);
+    const buffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer;
+    return new Blob([buffer], { type: dataDirType });
+  }
+
+  /**
    * Retrieves diagnostic information about the database connection state.
    *
    * Returns information about the database type, sync configuration, and
@@ -660,6 +712,8 @@ export type OminipgDrizzleMixin = {
   sync: () => Promise<{ pushed: number }>;
   /** Synchronize sequence values from remote */
   syncSequences: () => Promise<{ synced: number }>;
+  /** Dump the active PGlite data directory as a Blob */
+  dumpDataDir: () => Promise<Blob>;
   /** Get diagnostic information about the database */
   getDiagnosticInfo: () => Promise<Record<string, unknown>>;
   /** Close the database connection */
@@ -827,6 +881,7 @@ function createDrizzleAdapter<
     // Ominipg sync methods
     sync: ominipgInstance.sync.bind(ominipgInstance),
     syncSequences: ominipgInstance.syncSequences.bind(ominipgInstance),
+    dumpDataDir: ominipgInstance.dumpDataDir.bind(ominipgInstance),
     getDiagnosticInfo: ominipgInstance.getDiagnosticInfo.bind(ominipgInstance),
     close: ominipgInstance.close.bind(ominipgInstance),
 

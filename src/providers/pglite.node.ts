@@ -1,4 +1,9 @@
-import type { PGliteProvider } from "../shared/types.ts";
+import type { PGliteConfig, PGliteProvider } from "../shared/types.ts";
+export {
+  createLowMemoryPGliteConfig,
+  type LowMemoryPGliteConfigOptions,
+  lowMemoryPGliteStartParams,
+} from "../shared/pglite_config.ts";
 
 const extensionSpecifiers: Record<string, string> = {
   vector: "@electric-sql/pglite/vector",
@@ -40,4 +45,4 @@ export function createPGliteProvider(): PGliteProvider {
   };
 }
 
-export type { PGliteProvider } from "../shared/types.ts";
+export type { PGliteConfig, PGliteProvider } from "../shared/types.ts";

@@ -1,7 +1,7 @@
 import type { ResponseMsg, WorkerMsg } from "../shared/types.ts";
 import { getRssMb, safeErr } from "./utils.ts";
 import { boot, shutdown } from "./bootstrap.ts";
-import { exec } from "./db.ts";
+import { dumpDataDir, exec } from "./db.ts";
 
 export async function handleWorkerMessage(
   msg: WorkerMsg,
@@ -37,6 +37,16 @@ export async function handleWorkerMessage(
         const { synchronizeSequences } = await import("./sync/sequences.ts");
         const synced = await synchronizeSequences();
         post({ type: "sync-sequences-ok", reqId: msg.reqId, synced });
+        break;
+      }
+      case "dump-data-dir": {
+        const dataDir = await dumpDataDir();
+        post({
+          type: "dump-data-dir-ok",
+          reqId: msg.reqId,
+          dataDirBytes: new Uint8Array(await dataDir.arrayBuffer()),
+          dataDirType: dataDir.type || undefined,
+        });
         break;
       }
       case "diagnostic": {

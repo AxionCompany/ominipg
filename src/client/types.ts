@@ -104,6 +104,14 @@ export interface OminipgConnectionOptions {
   pgliteConfig?: PGliteConfig;
 
   /**
+   * Built-in memory tuning profile for PGlite.
+   *
+   * Defaults to "low-memory". Set to "default" to use upstream PGlite defaults.
+   * A custom `pgliteConfig.startParams` also disables the built-in profile.
+   */
+  pgliteMemoryProfile?: "default" | "low-memory";
+
+  /**
    * Provider used to load PGlite when connecting to ':memory:' or 'file://' URLs.
    * Required for PGlite connections so the core package does not hard-depend on
    * '@electric-sql/pglite'.

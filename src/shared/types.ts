@@ -15,6 +15,7 @@ export type WorkerMsg =
   | ExecMsg
   | SyncMsg
   | SyncSeqMsg
+  | DumpDataDirMsg
   | DiagnosticMsg
   | CloseMsg;
 
@@ -42,6 +43,7 @@ export interface PGliteInstance {
   query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
   exec(sql: string): Promise<unknown>;
   listen(channel: string, callback: () => void): Promise<unknown>;
+  dumpDataDir?(): Promise<Blob>;
   close(): Promise<void>;
 }
 
@@ -109,6 +111,12 @@ export type ResponseMsg =
   | { type: "exec-ok"; reqId: number; rows: unknown[] }
   | { type: "sync-ok"; reqId: number; pushed: number }
   | { type: "sync-sequences-ok"; reqId: number; synced: number }
+  | {
+    type: "dump-data-dir-ok";
+    reqId: number;
+    dataDirBytes: Uint8Array;
+    dataDirType?: string;
+  }
   | { type: "close-ok"; reqId: number }
   | {
     type: "diagnostic-ok";
@@ -135,6 +143,13 @@ export interface InitMsg {
   disableAutoPush?: boolean;
   pgliteExtensions?: string[];
   pgliteConfig?: PGliteConfig;
+  /**
+   * Built-in memory tuning profile for PGlite.
+   *
+   * Defaults to "low-memory". Set to "default" to use upstream PGlite defaults.
+   * A custom `pgliteConfig.startParams` also disables the built-in profile.
+   */
+  pgliteMemoryProfile?: "default" | "low-memory";
   pgliteProvider?: PGliteProvider;
   pgProvider?: PgProvider;
   logMetrics?: boolean;
@@ -163,6 +178,14 @@ export type SyncMsg = {
  */
 export type SyncSeqMsg = {
   type: "sync-sequences";
+  reqId: number;
+};
+
+/**
+ * Requests a PGlite data directory snapshot from the active connection.
+ */
+export type DumpDataDirMsg = {
+  type: "dump-data-dir";
   reqId: number;
 };
 

@@ -1,4 +1,4 @@
-import { PGlite } from "npm:@electric-sql/pglite@0.3.4";
+import { PGlite } from "npm:@electric-sql/pglite@0.4.5";
 import { delay, snapshotMemory } from "./_utils.ts";
 
 console.log("PGlite direct usage\n===================");

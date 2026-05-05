@@ -1,5 +1,6 @@
 import { detectDatabaseType, getRssMb } from "./utils.ts";
 import { ensureDirectory, pathExistsAsDirectory } from "../runtime/mod.ts";
+import { applyDefaultLowMemoryPGliteConfig } from "../shared/pglite_config.ts";
 import type {
   InitMsg,
   PGliteConfig,
@@ -19,6 +20,7 @@ export interface DatabaseClient {
   query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
   exec(sql: string): Promise<void>;
   listen?(channel: string, callback: () => void): Promise<void>;
+  dumpDataDir?(): Promise<Blob>;
   close(): Promise<void>;
 }
 
@@ -56,6 +58,7 @@ interface PGliteLike {
   query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
   exec(sql: string): Promise<unknown>;
   listen(channel: string, callback: () => void): Promise<unknown>;
+  dumpDataDir?(): Promise<Blob>;
   close(): Promise<void>;
 }
 
@@ -72,6 +75,13 @@ class PGliteAdapter implements DatabaseClient {
 
   async listen(channel: string, callback: () => void) {
     await this.pglite.listen(channel, callback);
+  }
+
+  async dumpDataDir() {
+    if (!this.pglite.dumpDataDir) {
+      throw new Error("This PGlite version does not support dumpDataDir().");
+    }
+    return await this.pglite.dumpDataDir();
   }
 
   async close() {
@@ -260,13 +270,19 @@ async function loadExtensions(
 function mergePGliteConfig(
   baseConfig: PGliteConfig | undefined,
   extensions: PGliteExtensionsMap,
+  memoryProfile: "default" | "low-memory" | undefined,
 ): PGliteConfig | undefined {
+  const effectiveBaseConfig = (memoryProfile ?? "low-memory") === "low-memory"
+    ? applyDefaultLowMemoryPGliteConfig(baseConfig)
+    : baseConfig;
   const hasExtensions = Object.keys(extensions).length > 0;
-  if (!baseConfig && !hasExtensions) {
+  if (!effectiveBaseConfig && !hasExtensions) {
     return undefined;
   }
 
-  const config: PGliteConfig = baseConfig ? { ...baseConfig } : {};
+  const config: PGliteConfig = effectiveBaseConfig
+    ? { ...effectiveBaseConfig }
+    : {};
 
   if (hasExtensions) {
     const existing = config.extensions;
@@ -299,13 +315,18 @@ async function initializePGlite(
   extensionNames: string[] = [],
   logMetrics?: boolean,
   pgliteConfig?: PGliteConfig,
+  pgliteMemoryProfile?: "default" | "low-memory",
   provider?: PGliteProvider,
 ): Promise<DatabaseClient> {
   const { PGlite } = await loadPGliteModule(provider);
   const extensions = extensionNames.length > 0
     ? await loadExtensions(provider, extensionNames, logMetrics)
     : {};
-  const mergedConfig = mergePGliteConfig(pgliteConfig, extensions);
+  const mergedConfig = mergePGliteConfig(
+    pgliteConfig,
+    extensions,
+    pgliteMemoryProfile,
+  );
   const loadedExtensionNames = Object.keys(extensions);
 
   if (url === ":memory:" || url === "") {
@@ -563,6 +584,7 @@ export async function initConnections(cfg: InitMsg) {
       cfg.pgliteExtensions ?? [],
       cfg.logMetrics,
       cfg.pgliteConfig,
+      cfg.pgliteMemoryProfile,
       pgliteProvider,
     );
   } else {
@@ -590,6 +612,16 @@ export async function exec(
 ): Promise<unknown[]> {
   const result = await mainDb.query(sql, params ?? []);
   return result.rows;
+}
+
+/**
+ * Dumps the active PGlite data directory as a Blob.
+ */
+export async function dumpDataDir(): Promise<Blob> {
+  if (mainDbType !== "pglite" || !mainDb.dumpDataDir) {
+    throw new Error("dumpDataDir() is only available for PGlite connections.");
+  }
+  return await mainDb.dumpDataDir();
 }
 
 /**
