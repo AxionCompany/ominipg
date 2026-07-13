@@ -46,7 +46,13 @@
  */
 
 import { TypedEmitter } from "npm:tiny-typed-emitter@2.1.0";
-import type { OminipgClientEvents, OminipgConnectionOptions } from "./types.ts";
+import type {
+  OminipgClientEvents,
+  OminipgConnectionOptions,
+  PgNotification,
+  PgSubscription,
+} from "./types.ts";
+import { PgListenerHub, validateNotificationChannel } from "./notifications.ts";
 import {
   createDatabaseWorker,
   getRssMb,
@@ -194,11 +200,12 @@ function directPgLoadError(error: unknown) {
 async function createDirectPool(
   url: string,
   provider: PgProvider | undefined,
+  max: number,
 ): Promise<PgPool> {
   try {
     if (provider?.loadPg) {
       const pg = await provider.loadPg();
-      return new pg.Pool({ connectionString: url, max: 5 });
+      return new pg.Pool({ connectionString: url, max });
     }
     if (provider?.moduleSpecifier) {
       const pg = await import(provider.moduleSpecifier) as {
@@ -206,7 +213,7 @@ async function createDirectPool(
           options: { connectionString: string; max?: number },
         ) => PgPool;
       };
-      return new pg.Pool({ connectionString: url, max: 5 });
+      return new pg.Pool({ connectionString: url, max });
     }
   } catch (error) {
     throw directPgLoadError(error);
@@ -273,6 +280,8 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   private readonly worker?: RuntimeWorker;
   private readonly requests?: RequestManager;
   private readonly pool?: PgPool; // pg.Pool when in direct mode
+  private listenerHub?: PgListenerHub;
+  private closed = false;
   public crud?: unknown;
 
   private constructor(
@@ -360,11 +369,16 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     const syncDisabled = !options.syncUrl;
     const useWorker = options.useWorker ?? !!options.syncUrl;
     const metricsEnabled = !!options.logMetrics;
+    const pgPoolMax = options.pgPoolMax ?? 5;
+
+    if (!Number.isSafeInteger(pgPoolMax) || pgPoolMax < 1) {
+      throw new Error("pgPoolMax must be a positive integer.");
+    }
 
     if (!useWorker && isPg && syncDisabled) {
       const before = metricsEnabled ? getRssMb() : null;
       console.log("Using direct Postgres mode");
-      const pool = await createDirectPool(url, options.pgProvider);
+      const pool = await createDirectPool(url, options.pgProvider, pgPoolMax);
       const client = await pool.connect();
       try {
         await client.query("SELECT 1");
@@ -424,7 +438,11 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     }
     const db = new Ominipg("worker", worker);
 
-    const { schemas: _schemasForWorker, ...initOptions } = options;
+    const {
+      schemas: _schemasForWorker,
+      pgPoolMax: _pgPoolMaxForWorker,
+      ...initOptions
+    } = options;
     const initMsg = {
       type: "init" as const,
       ...initOptions,
@@ -522,6 +540,41 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     TRow extends Record<string, unknown> = Record<string, unknown>,
   >(sql: string, params?: unknown[]): Promise<{ rows: TRow[] }> {
     return this.query<TRow>(sql, params);
+  }
+
+  /**
+   * Subscribes to a PostgreSQL notification channel in direct PostgreSQL mode.
+   *
+   * All subscriptions on this Ominipg instance share one pinned connection.
+   * The listener reconnects with capped backoff and reissues active LISTENs.
+   */
+  public async listen(
+    channel: string,
+    handler: (notification: PgNotification) => void,
+  ): Promise<PgSubscription> {
+    if (this.mode !== "direct" || !this.pool) {
+      throw new Error(
+        "Ominipg listen() is supported only in direct PostgreSQL mode (useWorker: false).",
+      );
+    }
+    if (this.closed) throw new Error("Ominipg instance is closed.");
+    this.listenerHub ??= new PgListenerHub(
+      this.pool,
+      (error) => this.emit("error", error),
+    );
+    return await this.listenerHub.listen(channel, handler);
+  }
+
+  /** Sends a PostgreSQL notification using parameterized `pg_notify`. */
+  public async notify(channel: string, payload = ""): Promise<void> {
+    if (this.mode !== "direct") {
+      throw new Error(
+        "Ominipg notify() is supported only in direct PostgreSQL mode (useWorker: false).",
+      );
+    }
+    if (this.closed) throw new Error("Ominipg instance is closed.");
+    validateNotificationChannel(channel);
+    await this.query("SELECT pg_notify($1, $2)", [channel, payload]);
   }
 
   /**
@@ -667,7 +720,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * ```
    */
   public async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
     if (this.mode === "direct") {
+      await this.listenerHub?.close();
       await this.pool?.end();
       this.emit("close");
       return;
@@ -729,7 +785,13 @@ export type OminipgDrizzleMixin = {
 
 export { defineSchema } from "./crud/index.ts";
 export type { CrudApi, CrudSchemas, JsonSchema } from "./crud/index.ts";
-export type { OminipgClientEvents, OminipgConnectionOptions } from "./types.ts";
+export type {
+  OminipgClientEvents,
+  OminipgConnectionOptions,
+  PgNotification,
+  PgSubscription,
+  PgSubscriptionState,
+} from "./types.ts";
 
 /**
  * Creates a Drizzle ORM adapter for an Ominipg instance.

@@ -384,6 +384,13 @@ App → Client → pg.Pool → PostgreSQL → Response → Client → App
       (main)
 ```
 
+Direct mode also owns an optional notification hub. The first `listen()` pins
+one pool client, multiplexes all active channels with reference counting, and
+reconnects with capped backoff before reissuing active `LISTEN` statements.
+Normal queries and `notify()` continue to use short-lived pool checkouts. Set
+`pgPoolMax` to at least 2 when notifications are enabled. Worker, PGlite, and
+sync modes reject this connection-scoped API explicitly.
+
 ### Mode Selection
 
 ```typescript

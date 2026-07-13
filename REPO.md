@@ -10,6 +10,7 @@ tags:
   - crud
 entrypoints:
   - src/client/index.ts
+  - src/client/notifications.ts
   - src/client/crud/index.ts
   - src/worker/index.ts
   - docs/ARCHITECTURE.md
@@ -30,6 +31,7 @@ Database foundation used by Copilotz for local and remote PostgreSQL access, wor
 ## Common Task Locations
 
 - Public client API: `src/client/`
+- Direct PostgreSQL LISTEN/NOTIFY lifecycle: `src/client/notifications.ts`
 - Worker bootstrap and DB execution: `src/worker/`
 - Shared message types: `src/shared/`
 - Examples and tests: `examples/`, `test/`

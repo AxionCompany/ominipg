@@ -125,6 +125,14 @@ export interface OminipgConnectionOptions {
   pgProvider?: PgProvider;
 
   /**
+   * Maximum number of connections in the direct PostgreSQL pool.
+   *
+   * Defaults to 5. Notification listeners pin one connection for the lifetime
+   * of the listener hub, so configure at least 2 when using `listen()`.
+   */
+  pgPoolMax?: number;
+
+  /**
    * Force use of a Web Worker even when only a Postgres URL is provided.
    * Defaults to true. Set to false to enable direct Postgres mode (no Worker, no PGlite).
    */
@@ -158,3 +166,27 @@ export interface OminipgClientEvents {
   "error": (error: Error) => void;
   "close": () => void;
 }
+
+/** A PostgreSQL asynchronous notification delivered to a listener. */
+export type PgNotification = {
+  channel: string;
+  payload?: string;
+  processId: number;
+};
+
+export type PgSubscriptionState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "closed";
+
+/** A reference-counted subscription on Ominipg's shared listener connection. */
+export type PgSubscription = {
+  readonly closed: Promise<void>;
+  readonly state: PgSubscriptionState;
+  close(): Promise<void>;
+  onStateChange(
+    handler: (state: PgSubscriptionState) => void,
+  ): () => void;
+  onError(handler: (error: Error) => void): () => void;
+};

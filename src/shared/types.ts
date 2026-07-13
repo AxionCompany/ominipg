@@ -64,13 +64,31 @@ export interface PGliteProvider {
 
 export interface PgPoolClient {
   query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
-  release(): void;
+  release(destroy?: boolean): void;
+  on(
+    event: "notification",
+    listener: (message: PgNotificationMessage) => void,
+  ): this;
+  on(event: "error", listener: (error: Error) => void): this;
+  on(event: "end", listener: () => void): this;
+  removeListener(
+    event: "notification",
+    listener: (message: PgNotificationMessage) => void,
+  ): this;
+  removeListener(event: "error", listener: (error: Error) => void): this;
+  removeListener(event: "end", listener: () => void): this;
+}
+
+export interface PgNotificationMessage {
+  processId: number;
+  channel: string;
+  payload?: string;
 }
 
 export interface PgPool {
   connect(): Promise<PgPoolClient>;
   end(): Promise<void>;
-  options?: { connectionString?: string };
+  options?: { connectionString?: string; max?: number };
 }
 
 export interface PgModule {

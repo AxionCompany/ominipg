@@ -409,6 +409,7 @@ await Ominipg.connect({
   syncUrl: "postgresql://...",               // Optional remote sync
   pgliteProvider: createPGliteProvider(),    // Required for PGlite URLs
   pgProvider: createPgProvider(),            // Required for PostgreSQL/sync
+  pgPoolMax: 5,                              // Direct pool; use >= 2 with listen()
 
   // Schema and initialization
   schemas: defineSchema({ ... }),            // CRUD schemas
@@ -447,6 +448,13 @@ db.on("error", (error) => console.error(error));
 
 // Diagnostic info
 const info = await db.getDiagnosticInfo();
+
+// Direct PostgreSQL LISTEN/NOTIFY
+const subscription = await db.listen("jobs_ready", (notification) => {
+  console.log(notification.payload);
+});
+await db.notify("jobs_ready", "job-id");
+await subscription.close();
 
 // Cleanup
 await db.close();
