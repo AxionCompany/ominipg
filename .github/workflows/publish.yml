@@ -12,5 +12,10 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v5
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.2
+      - name: Verify packed consumer types
+        run: deno test --allow-all test/packed-types.test.ts
       - name: Publish package
         run: npx jsr publish

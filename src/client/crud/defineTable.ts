@@ -1,19 +1,18 @@
 import type {
+  CrudRow,
   JsonSchema,
   TableKeyDefinition,
+  TableSchemaConfig,
   TableTimestampColumns,
   TableTimestampConfig,
-  TableSchemaConfig,
   WritableRowForTable,
-  CrudRow,
 } from "./types.ts";
 
 type Primitive = string | number | boolean | bigint | symbol | null | undefined;
 
-type ConstifyArray<T extends readonly unknown[]> =
-  number extends T["length"]
-    ? readonly Constify<T[number]>[]
-    : { readonly [K in keyof T]: Constify<T[K]> };
+type ConstifyArray<T extends readonly unknown[]> = number extends T["length"]
+  ? readonly Constify<T[number]>[]
+  : { readonly [K in keyof T]: Constify<T[K]> };
 
 type Constify<T> = T extends Primitive ? T
   : T extends (...args: unknown[]) => unknown ? T
@@ -25,8 +24,9 @@ type Constify<T> = T extends Primitive ? T
   : T;
 
 type Simplify<T> = { [K in keyof T]: T[K] } extends infer O ? {
-  [K in keyof O]: O[K];
-} : never;
+    [K in keyof O]: O[K];
+  }
+  : never;
 
 type KeysInput =
   | readonly TableKeyDefinition[]
@@ -66,25 +66,39 @@ type FrozenConfig<C> = C extends SchemaConfigInput<
   infer Keys extends KeysInput,
   infer Timestamps extends TimestampsInput,
   infer Defaults extends DefaultsInput | undefined
-> ? Schema extends JsonSchema
-  ? NormalizeKeys<Keys> extends never ? never
-  : TableSchemaConfig<
-    Constify<Schema>,
-    NormalizeKeys<Keys>,
-    NormalizeTimestamps<Timestamps>,
-    Constify<Defaults>
-  >
+> ? Schema extends JsonSchema ? NormalizeKeys<Keys> extends never ? never
+    : TableSchemaConfig<
+      Constify<Schema>,
+      NormalizeKeys<Keys>,
+      NormalizeTimestamps<Timestamps>,
+      Constify<Defaults>
+    >
   : never
   : never;
 
-type FrozenConfigMap<S extends Record<string, SchemaConfigInput<JsonSchema, KeysInput, TimestampsInput, DefaultsInput | undefined>>> = {
+type FrozenConfigMap<
+  S extends Record<
+    string,
+    SchemaConfigInput<
+      JsonSchema,
+      KeysInput,
+      TimestampsInput,
+      DefaultsInput | undefined
+    >
+  >,
+> = {
   readonly [K in keyof S]: FrozenConfig<S[K]>;
 };
 
 type FrozenSchemas<
   S extends Record<
     string,
-    SchemaConfigInput<JsonSchema, KeysInput, TimestampsInput, DefaultsInput | undefined>
+    SchemaConfigInput<
+      JsonSchema,
+      KeysInput,
+      TimestampsInput,
+      DefaultsInput | undefined
+    >
   >,
 > = {
   readonly [K in keyof S]: FrozenConfig<S[K]> & {
@@ -140,21 +154,21 @@ function normalizeTimestamps(
 
 /**
  * Defines database table schemas with JSON Schema and generates type-safe CRUD types.
- * 
+ *
  * This function creates immutable schema definitions that are used to generate
  * TypeScript types and CRUD APIs. Each table schema includes:
  * - JSON Schema for validation
  * - Primary key definitions
  * - Optional timestamp configuration
  * - Optional default values
- * 
+ *
  * The returned schemas include type inference helpers (`$inferSelect`, `$inferInsert`)
  * for extracting TypeScript types from the schema definitions.
- * 
+ *
  * @typeParam S - The schema configuration object type
  * @param schemas - Object mapping table names to schema configurations
  * @returns Frozen schema definitions with type inference helpers
- * 
+ *
  * @example
  * ```typescript
  * const schemas = defineSchema({
@@ -186,12 +200,12 @@ function normalizeTimestamps(
  *     timestamps: { createdAt: "created_at", updatedAt: "updated_at" }
  *   }
  * });
- * 
+ *
  * // Type inference
  * type User = typeof schemas.users.$inferSelect;
  * type NewUser = typeof schemas.users.$inferInsert;
  * ```
- * 
+ *
  * @example
  * ```typescript
  * // With default values
@@ -232,8 +246,9 @@ export function defineSchema<
         typeof defaultsValue
       >;
     const frozenConfig = deepFreeze({
-      schema: deepFreeze(structuredClone(config.schema)) as
-        Constify<S[typeof tableName]["schema"]>,
+      schema: deepFreeze(structuredClone(config.schema)) as Constify<
+        S[typeof tableName]["schema"]
+      >,
       keys: toReadonlyArray(
         toReadonlyKeys(config.keys as TableKeyDefinition[]),
       ) as NormalizeKeys<S[typeof tableName]["keys"]>,
@@ -246,4 +261,3 @@ export function defineSchema<
   }
   return Object.freeze(result) as FrozenSchemas<S>;
 }
-
