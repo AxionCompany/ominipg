@@ -169,15 +169,6 @@ type PropertyForTable<
 
 type ReadOnlyProperty<Prop> = Prop extends { readOnly: true } ? true : false;
 
-type ReadOnlyKeysForTable<
-  Schemas extends CrudSchemas,
-  TableName extends keyof Schemas,
-> = {
-  [K in keyof SchemaProperties<Schemas, TableName>]: ReadOnlyProperty<
-    SchemaProperties<Schemas, TableName>[K]
-  > extends true ? K : never;
-}[keyof SchemaProperties<Schemas, TableName>];
-
 type ExtractArrayRef<Prop> = Prop extends { items: infer Items }
   ? ExtractRef<Items>
   : never;
@@ -210,26 +201,23 @@ type IsArraySchema<Prop> = Prop extends { type: "array" } ? true
   : Prop extends { items: unknown } ? true
   : false;
 
+type RelationForRef<
+  S extends CrudSchemas,
+  Ref,
+  Mode extends "array" | "object",
+> = Ref extends string
+  ? RefTarget<Ref> extends infer Target
+    ? Target extends keyof S ? { mode: Mode; target: Target }
+    : never
+  : never
+  : never;
+
 type RelationDescriptor<S extends CrudSchemas, Table extends keyof S, Prop> =
   ReadOnlyProperty<Prop> extends true ? (
       IsArraySchema<Prop> extends true ? (
-          ExtractArrayRef<Prop> extends infer Ref extends string ? (
-              RefTarget<Ref> extends infer Target extends keyof S ? {
-                  mode: "array";
-                  target: Target;
-                }
-                : never
-            )
-            : never
+          RelationForRef<S, ExtractArrayRef<Prop>, "array">
         )
-        : ExtractRef<Prop> extends infer Ref extends string ? (
-            RefTarget<Ref> extends infer Target extends keyof S ? {
-                mode: "object";
-                target: Target;
-              }
-              : never
-          )
-        : never
+        : RelationForRef<S, ExtractRef<Prop>, "object">
     )
     : never;
 
@@ -468,16 +456,14 @@ export type WritableRowForTable<
 > = SetOptional<
   Omit<
     CrudRow<Schemas, TableName>,
-    | CrudTableRelationKeys<Schemas, TableName>
-    | ReadOnlyKeysForTable<Schemas, TableName>
+    CrudTableRelationKeys<Schemas, TableName>
   >,
   OptionalInsertKeys<
     Schemas,
     TableName,
     Omit<
       CrudRow<Schemas, TableName>,
-      | CrudTableRelationKeys<Schemas, TableName>
-      | ReadOnlyKeysForTable<Schemas, TableName>
+      CrudTableRelationKeys<Schemas, TableName>
     >
   >
 >;

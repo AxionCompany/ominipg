@@ -64,9 +64,14 @@ const input: Insert = {
   namespace: "tenant",
   data: { metadata: true },
 };
+const inputWithId: Insert = {
+  id: "id",
+  namespace: "tenant",
+};
 declare const row: Row;
+const id: string = row.id;
 const metadata = row.data?.metadata;
-console.log(input, row.id, metadata);
+console.log(input, inputWithId, id, metadata);
 `,
       );
 
