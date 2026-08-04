@@ -6,16 +6,15 @@ const PG_URL = Deno.env.get("DB_URL_PG"); // postgres:// URL
 
 if (!PG_URL) {
   Deno.test({
-    name: "Worker Postgres no-sync: skipped (missing DB_URL_PG)",
+    name: "Postgres Oxian session: skipped (missing DB_URL_PG)",
     ignore: true,
     fn: () => {},
   });
 } else {
-  Deno.test("Worker Postgres mode without sync: basic query and diag", async () => {
+  Deno.test("Postgres Oxian session without sync: query and diagnostics", async () => {
     const db = await Ominipg.connect({
       url: PG_URL,
       pgProvider: createPgProvider(),
-      useWorker: true,
     });
 
     const { rows } = await db.query("SELECT 1 as x");

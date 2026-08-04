@@ -1,10 +1,13 @@
-import { mainDb, mainDbType, recentlyPushed, syncPool } from "./db.ts";
+import { type EngineState, requireMainDb } from "./db.ts";
 
 /**
  * Gathers diagnostic information about the current state of the database worker.
  * @returns An object containing various pieces of diagnostic information.
  */
-export async function getDiagnosticInfo(): Promise<any> {
+export async function getDiagnosticInfo(
+  state: EngineState,
+): Promise<Record<string, unknown>> {
+  const mainDb = requireMainDb(state);
   let outboxInfo = {};
   try {
     const countResult = await mainDb.query(
@@ -15,7 +18,7 @@ export async function getDiagnosticInfo(): Promise<any> {
         ((countResult.rows[0] as { count?: string } | undefined)?.count) || "0",
       ),
     };
-  } catch (e) {
+  } catch (_e) {
     outboxInfo = { error: "Outbox table not available." };
   }
 
@@ -23,7 +26,7 @@ export async function getDiagnosticInfo(): Promise<any> {
   try {
     const state = await mainDb.query("SELECT * FROM _sync_state WHERE id = 1");
     syncInfo = state.rows[0] || {};
-  } catch (e) {
+  } catch (_e) {
     syncInfo = { error: "Sync state table not available." };
   }
 
@@ -34,10 +37,10 @@ export async function getDiagnosticInfo(): Promise<any> {
 
   return {
     mainDatabase: {
-      type: mainDbType,
+      type: state.mainDbType,
     },
     syncDatabase: {
-      hasSyncPool: !!syncPool,
+      hasSyncPool: !!state.syncPool,
     },
     syncState: syncInfo,
     outbox: outboxInfo,
@@ -45,9 +48,9 @@ export async function getDiagnosticInfo(): Promise<any> {
       r,
     ) => r.tablename),
     echoPrevention: {
-      trackedTables: Array.from(recentlyPushed.keys()),
+      trackedTables: Array.from(state.recentlyPushed.keys()),
       entries: Object.fromEntries(
-        Array.from(recentlyPushed.entries()).map(([table, pkSet]) => [
+        Array.from(state.recentlyPushed.entries()).map(([table, pkSet]) => [
           table,
           Array.from(pkSet),
         ]),

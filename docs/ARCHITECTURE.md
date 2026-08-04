@@ -1,671 +1,286 @@
-# Architecture Guide
+# Architecture
 
-Understanding how Ominipg works under the hood.
+Ominipg is an Oxian-native database workload. The public client, database
+engine, and execution topology are separate layers, so the same database API can
+run embedded in another application or on a worker attached to an Oxian
+Hypervisor.
 
----
+## Thirty-thousand-foot view
 
-## Table of Contents
+```mermaid
+flowchart LR
+  subgraph Application["Application"]
+    API["Ominipg API\nquery · CRUD · Drizzle · sync"]
+    SC["Session client\nrequest/response/event multiplexer"]
+    API --> SC
+  end
 
-- [Overview](#overview)
-- [Architecture Diagram](#architecture-diagram)
-- [Components](#components)
-- [Worker Mode vs Direct Mode](#worker-mode-vs-direct-mode)
-- [Request Flow](#request-flow)
-- [Sync Mechanism](#sync-mechanism)
-- [Performance Characteristics](#performance-characteristics)
-- [Design Decisions](#design-decisions)
+  SC --> D{"Oxian dispatcher"}
 
----
+  subgraph Embedded["Embedded topology — same isolate"]
+    H["WorkerHost"]
+    IW["In-process workload"]
+    H --> IW
+  end
 
-## Overview
+  subgraph Routed["Routed topology"]
+    HV["Hypervisor"]
+    RW["Attached remote worker"]
+    HV -->|"oxian.worker.v1 / WSS"| RW
+  end
 
-Ominipg is designed around a **flexible, multi-mode architecture** that adapts
-to different use cases:
-
-- **Worker Mode**: Database operations in isolated Web Worker
-- **Direct Mode**: Direct connection to PostgreSQL
-- **Sync Mode**: Local PGlite synced with remote PostgreSQL
-
-This architecture provides:
-
-- ⚡ **Performance**: Choose between isolation (worker) and speed (direct)
-- 🔒 **Isolation**: Worker mode keeps database operations off main thread
-- 🔄 **Local-first**: Built-in sync for offline-capable apps
-- 🎯 **Flexibility**: Multiple API styles (SQL, ORM, CRUD)
-
----
-
-## Architecture Diagram
-
-### High-Level Overview
-
-```
-┌─────────────────────────────────────────────────────┐
-│              Application Layer                      │
-│  - Your code                                        │
-│  - UI components                                    │
-│  - Business logic                                   │
-└──────────────────┬──────────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────────┐
-│              Ominipg Client                         │
-│  - Public API (query, crud, sync)                   │
-│  - Request manager                                  │
-│  - Event emitter                                    │
-│  - CRUD API generator                               │
-└────────┬──────────────────────┬─────────────────────┘
-         │                      │
-         │ (useWorker)          │ (direct mode)
-         ▼                      ▼
-┌─────────────────┐    ┌─────────────────┐
-│  Worker Mode    │    │  Direct Mode    │
-│                 │    │                 │
-│  ┌───────────┐  │    │  ┌───────────┐  │
-│  │  Worker   │  │    │  │ pg.Pool   │  │
-│  │  Thread   │  │    │  │           │  │
-│  │           │  │    │  └─────┬─────┘  │
-│  │ ┌───────┐ │  │    │        │        │
-│  │ │PGlite │ │  │    │        ▼        │
-│  │ │  or   │ │  │    │  ┌───────────┐  │
-│  │ │  pg   │ │  │    │  │PostgreSQL │  │
-│  │ └───┬───┘ │  │    │  │  Server   │  │
-│  │     │     │  │    │  └───────────┘  │
-│  └─────┼─────┘  │    └─────────────────┘
-│        │        │
-│   ┌────▼─────┐  │
-│   │Sync Mgr  │  │ (optional)
-│   └────┬─────┘  │
-└────────┼────────┘
-         │
-         ▼
-  ┌─────────────┐
-  │ PostgreSQL  │
-  │  (Remote)   │
-  └─────────────┘
+  D --> H
+  D --> HV
+  IW --> E1["OminipgEngine"]
+  RW --> E2["OminipgEngine"]
+  E1 --> DB1["PGlite or PostgreSQL"]
+  E2 --> DB2["PGlite or PostgreSQL"]
 ```
 
-### Detailed Component Diagram
+One `Ominipg.connect()` call opens one long-lived `ominipg.session.v1` dispatch.
+That dispatch creates one `OminipgEngine`, and the engine owns all mutable state
+for the lifetime of the connection. There are no module-level database
+singletons.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Ominipg Client (Main Thread)                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │   Public     │  │    CRUD      │  │   Drizzle    │          │
-│  │     API      │  │   Generator  │  │   Adapter    │          │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
-│         │                 │                 │                  │
-│         └─────────────────┼─────────────────┘                  │
-│                           │                                    │
-│                  ┌────────▼────────┐                           │
-│                  │ Request Manager │                           │
-│                  │  - ID generation │                           │
-│                  │  - Timeouts      │                           │
-│                  │  - Response map  │                           │
-│                  └────────┬────────┘                           │
-│                           │                                    │
-│                  ┌────────▼────────┐                           │
-│                  │  postMessage()  │                           │
-│                  └────────┬────────┘                           │
-└───────────────────────────┼──────────────────────────────────┘
-                            │
-              ┌─────────────┴─────────────┐
-              │                           │
-    ┌─────────▼────────┐      ┌──────────▼───────┐
-    │  Worker Thread   │      │   Direct Pool    │
-    │                  │      │   (pg.Pool)      │
-    │  ┌────────────┐  │      └──────────────────┘
-    │  │ onMessage  │  │
-    │  └──────┬─────┘  │
-    │         │        │
-    │  ┌──────▼─────┐  │
-    │  │DB Handler  │  │
-    │  │- exec      │  │
-    │  │- sync      │  │
-    │  │- diagnostic│  │
-    │  └──────┬─────┘  │
-    │         │        │
-    │  ┌──────▼─────┐  │
-    │  │  Database  │  │
-    │  │  (PGlite/  │  │
-    │  │   pg)      │  │
-    │  └──────┬─────┘  │
-    │         │        │
-    │  ┌──────▼─────┐  │
-    │  │Sync Manager│  │ (if syncUrl provided)
-    │  │- Tracker   │  │
-    │  │- Pusher    │  │
-    │  │- Puller    │  │
-    │  └────────────┘  │
-    └──────────────────┘
-```
+## Layers
 
----
+### Public API
 
-## Components
+`src/client/index.ts` owns the user-facing `Ominipg` class. It provides:
 
-### 1. Ominipg Client (Main Thread)
+- raw queries and transaction callbacks;
+- sync, sequence sync, snapshots, and diagnostics;
+- PostgreSQL `LISTEN`/`NOTIFY` subscriptions;
+- CRUD helpers and the Drizzle proxy adapter;
+- client lifecycle and typed events.
 
-The client is the main interface your application interacts with.
+CRUD and Drizzle do not bypass the session. Both compile their operations to SQL
+and call the same `Ominipg.query()` method as raw callers.
 
-**Responsibilities:**
+### Session client
 
-- Provide public API (`query`, `sync`, `crud`, etc.)
-- Manage worker lifecycle
-- Handle request/response correlation
-- Emit events
-- Manage CRUD API generation
+`src/session/client.ts` adapts an Oxian dispatch handle into a stateful client:
 
-**Key Files:**
+- a monotonically increasing request ID correlates responses;
+- multiple request promises share one input/output byte stream;
+- notification and subscription-state frames are delivered as events;
+- request timeouts reject the caller;
+- closing rejects pending requests and closes subscriptions;
+- injected dispatchers remain owned by the embedding application.
 
-- `src/client/index.ts` - Main client class
-- `src/client/types.ts` - Type definitions
-- `src/client/crud/` - CRUD API implementation
+The accepted dispatcher shape is structural. Oxian `WorkerHost` and `Hypervisor`
+both expose the required `dispatch()` lifecycle. An application can also provide
+an adapter with the same contract.
 
-**Code Structure:**
+### Ominipg session protocol
 
-```typescript
-class Ominipg extends TypedEmitter {
-  private mode: "worker" | "direct";
-  private worker?: Worker;
-  private requests?: RequestManager;
-  private pool?: PgPool;
-  public crud?: CrudApi<any>;
+`src/session/protocol.ts` defines `ominipg.session.v1`. Operations are:
 
-  static async connect(options) {/* ... */}
-  async query(sql, params) {/* ... */}
-  async sync() {/* ... */}
-  async close() {/* ... */}
-}
+- `initialize`
+- `query`
+- `sync`
+- `sync-sequences`
+- `dump-data-dir`
+- `diagnostics`
+- `listen`
+- `unlisten`
+- `notify`
+- `close`
+
+Every frame has an Ominipg protocol identifier and is one of `request`,
+`response`, or `event`. Errors cross the boundary as name, message, and optional
+stack fields, then become `Error` objects on the client.
+
+`src/session/codec.ts` is runtime-neutral and handles arbitrary stream chunk
+boundaries. A frame contains:
+
+```text
+4 bytes  "OMPG"
+4 bytes  tagged-JSON header length (uint32, big endian)
+4 bytes  binary attachment length (uint32, big endian)
+N bytes  UTF-8 tagged JSON
+M bytes  raw binary attachments
 ```
 
-### 2. Request Manager
-
-Handles communication between main thread and worker.
-
-**Responsibilities:**
-
-- Generate unique request IDs
-- Track pending requests
-- Handle timeouts
-- Route responses to correct promise
-
-**Message Format:**
-
-```typescript
-// Request
-{
-  type: "exec" | "sync" | "diagnostic" | "close",
-  reqId: number,
-  sql?: string,
-  params?: unknown[]
-}
-
-// Response
-{
-  type: "exec-result" | "error",
-  reqId: number,
-  rows?: unknown[],
-  error?: string
-}
-```
-
-### 3. Worker Thread
-
-Isolated execution context for database operations.
-
-**Responsibilities:**
-
-- Initialize database (PGlite or PostgreSQL)
-- Execute SQL queries
-- Manage sync operations
-- Track schema changes
-- Handle cleanup
-
-**Key Files:**
-
-- `src/worker/index.ts` - Worker entry point
-- `src/worker/db.ts` - Database abstraction
-- `src/worker/sync/` - Sync mechanism
-
-**Message Handler:**
-
-```typescript
-self.onmessage = async (event: MessageEvent<WorkerMsg>) => {
-  const msg = event.data;
-
-  switch (msg.type) {
-    case "init":
-      await initializeDatabase(msg);
-      break;
-    case "exec":
-      const result = await executeQuery(msg.sql, msg.params);
-      postMessage({ type: "exec-result", reqId: msg.reqId, ...result });
-      break;
-    case "sync":
-      const syncResult = await syncChanges();
-      postMessage({ type: "sync-result", reqId: msg.reqId, ...syncResult });
-      break;
-  }
-};
-```
-
-### 4. Database Layer
-
-Abstraction over PGlite and PostgreSQL.
-
-**Interface:**
-
-```typescript
-interface Database {
-  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
-  close(): Promise<void>;
-}
-
-// PGlite implementation
-class PGliteDatabase implements Database {
-  private db: PGlite;
-  async query(sql, params) {/* ... */}
-}
-
-// PostgreSQL implementation
-class PostgresDatabase implements Database {
-  private pool: Pool;
-  async query(sql, params) {/* ... */}
-}
-```
-
-### 5. Sync Manager
-
-Handles synchronization between local and remote databases.
-
-**Components:**
-
-**Tracker:**
-
-- Monitors INSERT/UPDATE/DELETE operations
-- Stores changes in `_changes` table
-- Assigns sequence numbers to changes
-
-**Pusher:**
-
-- Reads from `_changes` table
-- Applies changes to remote database
-- Handles conflict resolution (last write wins)
-- Clears synced changes
-
-**Sequences:**
-
-- Synchronizes auto-increment values
-- Prevents ID conflicts
-
-**Key Files:**
-
-- `src/worker/sync/manager.ts` - Main sync orchestration
-- `src/worker/sync/pusher.ts` - Push logic
-- `src/worker/sync/sequences.ts` - Sequence sync
-- `src/worker/sync/initial.ts` - Initial setup
-
-### 6. CRUD Generator
-
-Generates type-safe CRUD API from JSON Schema.
-
-**Process:**
-
-1. Parse JSON Schema definitions
-2. Generate Zod schemas for validation
-3. Create table-specific API methods
-4. Infer TypeScript types
-5. Build filter → SQL compiler
-
-**Key Files:**
-
-- `src/client/crud/index.ts` - API generator
-- `src/client/crud/schema.ts` - Schema processing
-- `src/client/crud/filter.ts` - Filter compiler
-- `src/client/crud/types.ts` - Type definitions
-
----
-
-## Worker Mode vs Direct Mode
-
-### Worker Mode (Default)
-
-**When Used:**
-
-- PGlite databases (in-memory or file-based)
-- PostgreSQL with sync enabled
-- When `useWorker: true` is specified
-
-**Advantages:**
-
-- ✅ Non-blocking: Database operations don't block main thread
-- ✅ Isolation: Separate memory space
-- ✅ Sync support: Built-in sync mechanism
-
-**Disadvantages:**
-
-- ❌ Message overhead: Serialization/deserialization cost
-- ❌ No shared state: Can't directly access database objects
-
-**Flow:**
-
-```
-App → Client → postMessage → Worker → Database → Response → Client → App
-      (main)                  (thread)
-```
-
-### Direct Mode
-
-**When Used:**
-
-- PostgreSQL connection without sync
-- When `useWorker: false` is specified
-- Optimization for simple PostgreSQL access
-
-**Advantages:**
-
-- ✅ Faster: No message passing overhead
-- ✅ Simpler: Direct function calls
-- ✅ Lower memory: No worker thread
-
-**Disadvantages:**
-
-- ❌ Blocks main thread: Long queries can freeze UI
-- ❌ No sync support: Can't sync local/remote
-- ❌ No isolation: Shares main thread memory
-
-**Flow:**
-
-```
-App → Client → pg.Pool → PostgreSQL → Response → Client → App
-      (main)
-```
-
-Direct mode also owns an optional notification hub. The first `listen()` pins
-one pool client, multiplexes all active channels with reference counting, and
-reconnects with capped backoff before reissuing active `LISTEN` statements.
-Normal queries and `notify()` continue to use short-lived pool checkouts. Set
-`pgPoolMax` to at least 2 when notifications are enabled. Worker, PGlite, and
-sync modes reject this connection-scoped API explicitly.
-
-### Mode Selection
-
-```typescript
-// Automatic selection
-const db = await Ominipg.connect({
-  url: ":memory:", // → In-process mode (PGlite)
-  pgliteProvider: createPGliteProvider(),
-});
-
-const db = await Ominipg.connect({
-  url: "postgresql://...", // → Direct mode (no sync)
-  pgProvider: createPgProvider(),
-});
-
-const db = await Ominipg.connect({
-  url: ":memory:",
-  syncUrl: "postgresql://...", // → Worker mode (sync enabled)
-  pgliteProvider: createPGliteProvider(),
-  pgProvider: createPgProvider(),
-});
-
-// Force mode
-const db = await Ominipg.connect({
-  url: "postgresql://...",
-  pgProvider: createPgProvider(),
-  useWorker: true, // Force worker mode
+Tagged values preserve `bigint`, `Date`, `Uint8Array`/buffers, `undefined`,
+non-finite numbers, and negative zero. Binary values remain raw attachments, so
+PGlite snapshots do not pay base64 expansion. Functions, symbols, cyclic values,
+and custom object instances are rejected because they are process-local.
+
+The default decoder limit is 512 MiB per frame. A routed client can set
+`oxian.maxFrameBytes`; a workload owner can set
+`createOminipgWorkload({ maxFrameBytes })`. Oxian can split one Ominipg frame
+across any number of transport chunks.
+
+### Workload
+
+`createOminipgWorkload()` returns an Oxian `WorkerWorkHandler`. Each invocation:
+
+1. resolves runtime-owned database providers;
+2. creates one `OminipgEngine`;
+3. reads requests sequentially from the operation input stream;
+4. writes correlated responses and asynchronous database events;
+5. closes engine resources when the client closes, input ends, or the Oxian
+   operation is cancelled.
+
+Sequential request execution gives each session deterministic query order and
+allows a PostgreSQL transaction to retain one checked-out pool client between
+`BEGIN` and `COMMIT`/`ROLLBACK`.
+
+Dependencies can be fixed or selected from Oxian metadata:
+
+```ts
+createOminipgWorkload({
+  dependencies: { pgliteProvider, pgProvider },
+  resolveDependencies: async (metadata) => dependenciesFor(metadata.tenantId),
 });
 ```
 
----
+Fixed dependencies take precedence over provider descriptors sent by the client.
+This is the preferred model for remote or multi-runtime workers.
 
-## Request Flow
+### Engine
 
-### Query Execution (Worker Mode)
+`src/worker/engine.ts` is the stateful domain façade. The `src/worker/` name is
+retained for package compatibility, but these modules do not install Web Worker
+or `worker_threads` listeners.
 
-```
-1. Application calls db.query("SELECT ...")
-   │
-   ▼
-2. Client.query() creates request
-   - Generates reqId
-   - Creates timeout
-   - Stores promise in pending map
-   │
-   ▼
-3. RequestManager.request() posts message
-   - Message: { type: "exec", reqId, sql, params }
-   │
-   ▼
-4. Worker receives message
-   - onmessage handler
-   │
-   ▼
-5. Worker.handleExec() executes query
-   - Calls db.query(sql, params)
-   - Gets result from PGlite/PostgreSQL
-   │
-   ▼
-6. Worker posts response
-   - Message: { type: "exec-result", reqId, rows }
-   │
-   ▼
-7. Client receives response
-   - RequestManager.handleMessage()
-   - Matches reqId to pending request
-   - Clears timeout
-   - Resolves promise
-   │
-   ▼
-8. Application receives result
-   - Promise resolves with { rows }
-```
+Every `EngineState` owns:
 
-### Query Execution (Direct Mode)
+- the main PGlite adapter or PostgreSQL pool;
+- the optional sync pool and logical replication service;
+- provider callbacks and PGlite configuration;
+- schema metadata and active extensions;
+- edge identity, LWW settings, and recently pushed rows;
+- sync timers and lifecycle flags;
+- notification subscriptions and listener hub.
 
-```
-1. Application calls db.query("SELECT ...")
-   │
-   ▼
-2. Client.query() directly calls pool
-   - const client = await pool.connect()
-   - const result = await client.query(sql, params)
-   - client.release()
-   │
-   ▼
-3. Application receives result
-   - Promise resolves with { rows }
-```
+The engine performs no runtime-global filesystem or memory probing. Optional
+host capabilities such as RSS measurement are injected.
 
-### CRUD Operation
+## Topologies and ownership
 
-```
-1. Application calls db.crud.users.find({ age: { $gt: 18 } })
-   │
-   ▼
-2. CRUD API processes filter
-   - Parses filter object
-   - Converts to SQL WHERE clause
-   - Adds parameters
-   │
-   ▼
-3. CRUD API calls db.query()
-   - Generated SQL: "SELECT * FROM users WHERE age > $1"
-   - Params: [18]
-   │
-   ▼
-4. Follows normal query flow (worker or direct)
-   │
-   ▼
-5. CRUD API validates response
-   - Validates rows against schema
-   - Populates relations if requested
-   │
-   ▼
-6. Application receives typed result
-   - Promise resolves with User[]
+### Private embedded — default
+
+When `oxian` is absent, Ominipg creates a private `WorkerHost`, attaches one
+in-process workload with capacity one, and dispatches the session to it.
+`db.close()` closes the engine, worker, and host.
+
+This path stays inside one JavaScript isolate. Oxian passes Web Streams
+directly; there is no WebSocket handshake, wire protocol, reconnect loop, Web
+Worker, or worker thread.
+
+### Shared embedded
+
+An application can attach `createOminipgWorkload()` to its own `WorkerHost` and
+pass that host as `oxian.dispatcher`. Multiple database sessions can share the
+host while retaining separate engines. `db.close()` closes only its session; the
+application drains or shuts down the shared worker and host.
+
+This is the intended embedding model for a library such as Copilotz: Copilotz
+can expose worker-enabled functionality without owning a server or Hypervisor.
+
+### Hypervisor-routed
+
+The same workload handler can run in an Oxian worker connected outbound to a
+Hypervisor. The server-side application passes that Hypervisor (or an adapter)
+as the Ominipg dispatcher. Oxian handles selection, capacity, acceptance,
+cancellation, and remote byte-stream transport.
+
+The Ominipg client is not itself a browser-to-Hypervisor requester protocol. A
+browser or another remote caller needs an application-owned ingress/bridge to a
+process that can dispatch work.
+
+## Database flows
+
+### Query
+
+```mermaid
+sequenceDiagram
+  participant App
+  participant Client as OminipgSessionClient
+  participant Oxian
+  participant Workload
+  participant Engine
+  participant DB
+
+  App->>Client: query(sql, params)
+  Client->>Oxian: request frame on session input
+  Oxian->>Workload: stream bytes
+  Workload->>Engine: query(sql, params)
+  Engine->>DB: execute
+  DB-->>Engine: rows
+  Engine-->>Workload: rows
+  Workload-->>Client: response frame
+  Client-->>App: { rows }
 ```
 
----
+### Transaction
 
-## Sync Mechanism
+`Ominipg.transaction()` sends `BEGIN`, invokes the callback, then sends `COMMIT`
+or `ROLLBACK`. PGlite already has one backend per engine. The PostgreSQL adapter
+checks out a pool client on `BEGIN` and retains it for every session query until
+the transaction ends. Closing an engine with an active transaction attempts a
+rollback before releasing the connection.
 
-### Setup Phase
+A transaction is session-scoped, not an application-wide lock. Avoid unrelated
+concurrent calls on the same client during its callback.
 
-```
-1. Connection with syncUrl
-   │
-   ▼
-2. Worker creates sync manager
-   - Connects to remote PostgreSQL
-   - Creates _changes table
-   - Creates triggers on tracked tables
-   │
-   ▼
-3. Triggers capture changes
-   - INSERT → INSERT into _changes
-   - UPDATE → INSERT into _changes
-   - DELETE → INSERT into _changes
-```
+### Sync
 
-### Sync Phase
+Sync belongs to the engine session:
 
-```
-1. Application calls db.sync()
-   │
-   ▼
-2. Client posts sync message
-   - { type: "sync", reqId }
-   │
-   ▼
-3. Worker.handleSync() starts sync
-   - Emits "sync:start" event
-   │
-   ▼
-4. SyncManager.push() reads changes
-   - SELECT * FROM _changes ORDER BY seq
-   │
-   ▼
-5. For each change:
-   - Apply to remote database
-   - INSERT/UPDATE/DELETE on remote
-   - Handle conflicts (last write wins)
-   │
-   ▼
-6. Clear synced changes
-   - DELETE FROM _changes WHERE seq <= ?
-   │
-   ▼
-7. Sync sequences
-   - SELECT currval() from remote
-   - SELECT setval() on local
-   │
-   ▼
-8. Return result
-   - { pushed: number }
-   │
-   ▼
-9. Client emits "sync:end"
-   - Application receives result
-```
+1. bootstrap creates user schema and sync infrastructure;
+2. initial synchronization reconciles local and remote data;
+3. logical replication pulls remote changes when configured;
+4. local triggers track changes;
+5. `sync()` pushes a batch to PostgreSQL;
+6. edge identity and the configured LWW column suppress echoes and resolve
+   supported conflicts.
 
-### Change Tracking
+Session shutdown stops replication and timers before closing database pools.
 
-**_changes Table:**
+### Notifications
 
-```sql
-CREATE TABLE _changes (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  table_name TEXT NOT NULL,
-  operation TEXT NOT NULL, -- INSERT, UPDATE, DELETE
-  row_data JSONB,          -- Changed row data
-  timestamp TIMESTAMPTZ DEFAULT NOW()
-)
-```
+PostgreSQL notifications are asynchronous session events. The first `listen()`
+creates one listener hub and pins one pool connection; channels and callbacks
+are multiplexed over it. Connection failure enters `reconnecting`, then active
+channels are reissued with capped backoff. `pgPoolMax` must be at least two.
 
-**Trigger Example:**
+PGlite and sync-only notification use is rejected. Notifications remain
+best-effort wake-up signals; durable state belongs in tables.
 
-```sql
-CREATE TRIGGER users_insert_trigger
-AFTER INSERT ON users
-FOR EACH ROW
-BEGIN
-  INSERT INTO _changes (table_name, operation, row_data)
-  VALUES ('users', 'INSERT', json_object(NEW.*));
-END;
-```
+## Runtime boundary
 
----
+The public dependency closure uses `crypto`, Web Streams, typed arrays,
+`TextEncoder`/`TextDecoder`, `Blob`, timers, and promises. It contains no direct
+Deno, Node, Bun, Cloudflare, Web Worker, `postMessage`, or `worker_threads` API.
 
-## Design Decisions
+Database providers are capability boundaries. A runtime-neutral session does not
+make every database engine available in every runtime: filesystem-backed PGlite
+needs filesystem support, and PostgreSQL/logical replication need a compatible
+driver and network model.
 
-### Why Web Workers?
+## Design consequences
 
-**Pros:**
+- Embedded execution is lighter than loopback WebSocket execution, but slightly
+  heavier than a direct method call because it preserves the unified framed
+  session contract.
+- Same-isolate execution provides lifecycle, scheduling, cancellation, and
+  ownership—not CPU, memory, crash, or security isolation.
+- Streams are the data plane because they carry backpressure and cancellation;
+  JavaScript callbacks/events are used only for local observation.
+- One long-lived dispatch preserves connection, transaction, subscription, and
+  sync state naturally.
+- Explicit providers keep runtime-specific imports out of the core and make
+  worker runtime ownership visible.
+- An injected host or Hypervisor always outlives individual Ominipg sessions
+  unless its application owner shuts it down.
 
-- Non-blocking database operations
-- Isolation prevents main thread contamination
-- Better for long-running queries
-- Required for sync mechanism (background processing)
+## Related documentation
 
-**Cons:**
-
-- Message passing overhead
-- Can't share objects between threads
-- More complex debugging
-
-**Decision:** Default to worker mode for consistency, but allow direct mode for
-simple PostgreSQL use cases.
-
-### Why JSON Schema?
-
-**Alternatives Considered:**
-
-- Zod (too JavaScript-specific)
-- TypeScript types (runtime validation needed)
-- Custom DSL (reinventing the wheel)
-
-**Why JSON Schema:**
-
-- Standard format
-- Language-agnostic
-- Rich ecosystem
-- Can generate Zod for runtime validation
-- Can generate TypeScript types
-
-### Why Last-Write-Wins?
-
-**Alternatives:**
-
-- Operational transforms (complex)
-- CRDTs (limited use cases)
-- Manual conflict resolution (poor UX)
-
-**Why LWW:**
-
-- Simple to implement
-- Works for 80% of use cases
-- Easy to understand
-- Can be extended later
-
-### Why Unidirectional Sync?
-
-**Current:** Local → Remote only
-
-**Why:**
-
-- Simpler implementation
-- Covers local-first use case
-- Avoids complex conflict resolution
-- Can be extended to bidirectional later
-
----
-
-## See Also
-
-- [API Reference](./API.md)
-- [Sync Guide](./SYNC.md)
-- [Source Code](../src)
+- [Oxian embedding and routing](./OXIAN.md)
+- [Runtime support](./RUNTIMES.md)
+- [Migrating to 0.9](./MIGRATION_0_9.md)
+- [Sync](./SYNC.md)
+- [PostgreSQL notifications](./NOTIFICATIONS.md)

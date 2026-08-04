@@ -28,7 +28,7 @@ const schemaSQL = [
   )`,
 ];
 
-async function smokeMemoryWorker() {
+async function smokeDeprecatedUseWorkerTrue() {
   const db = await Ominipg.connect({
     url: ":memory:",
     schemaSQL,
@@ -43,7 +43,7 @@ async function smokeMemoryWorker() {
   }
 }
 
-async function smokeMemoryInProcess() {
+async function smokeMemorySession() {
   const db = await Ominipg.connect({
     url: ":memory:",
     schemaSQL,
@@ -61,7 +61,7 @@ async function smokeMemoryInProcess() {
   }
 }
 
-async function smokeFileWorker() {
+async function smokeFileSession() {
   const path = `/tmp/ominipg-node-smoke-${process.pid}-${Date.now()}`;
   await rm(path, { recursive: true, force: true });
   const db = await Ominipg.connect({
@@ -84,7 +84,7 @@ async function smokeFileWorker() {
   }
 }
 
-async function smokeAutoConfigure() {
+async function smokeDeprecatedUseWorkerFalse() {
   const db = await Ominipg.connect(autoConfigure({
     url: ":memory:",
     useWorker: false,
@@ -117,9 +117,9 @@ async function smokeDirectPostgres() {
   }
 }
 
-await smokeMemoryWorker();
-await smokeMemoryInProcess();
-await smokeFileWorker();
-await smokeAutoConfigure();
+await smokeDeprecatedUseWorkerTrue();
+await smokeMemorySession();
+await smokeFileSession();
+await smokeDeprecatedUseWorkerFalse();
 await smokeDirectPostgres();
 console.log("npm Node smoke tests passed");

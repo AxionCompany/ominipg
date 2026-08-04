@@ -3,140 +3,145 @@
 
 # Ominipg
 
-> **The flexible, all-in-one toolkit for PostgreSQL in Deno and Node.js**
+> Runtime-neutral PostgreSQL and PGlite sessions powered by Oxian workloads
 
 [![JSR](https://jsr.io/badges/@oxian/ominipg)](https://jsr.io/@oxian/ominipg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 </div>
 
-Ominipg is a flexible PostgreSQL toolkit for Deno and Node.js that combines the
-power of [PGlite](https://github.com/electric-sql/pglite) (PostgreSQL in WASM)
-with a modern, developer-friendly API. Build local-first applications, use
-powerful CRUD operations with MongoDB-style filters, or integrate with your
-favorite ORM—all with full TypeScript type safety.
+Ominipg combines PGlite, PostgreSQL, local-first sync, typed CRUD helpers, and
+Drizzle integration behind one session API. Every connection is now an
+`ominipg.session.v1` Oxian workload, whether it runs inside an application or
+behind an Oxian Hypervisor.
 
----
+The default is lightweight and embedded: Ominipg creates an in-process Oxian
+`WorkerHost` in the current JavaScript isolate. It uses Web Streams and does not
+open a WebSocket or create a Web Worker/thread. Applications can instead inject
+a shared `WorkerHost` or another Oxian-compatible dispatcher.
 
-## ✨ Features
+## Highlights
 
-- 🦕 **Deno Native, Node Ready**: Deno-first source with npm output for Node.js
-  22+
-- 🚀 **Multiple Modes**: In-memory, persistent, or direct PostgreSQL connections
-- 🔄 **Local-First Sync**: Automatic synchronization between local and remote
-  databases
-- 📝 **Powerful CRUD API**: MongoDB-style filters with full type inference
-- 🎯 **ORM Integration**: Works seamlessly with Drizzle ORM
-- 🔌 **Standalone or Integrated**: Use CRUD module with any PostgreSQL database
-  library
-- ⚡ **Worker Isolation**: Run database operations in a Web Worker
-- 🔧 **PostgreSQL Extensions**: Support for uuid_ossp, vector, and more
-- 📘 **TypeScript First**: Complete type safety and inference
-- 🪶 **Lightweight Core**: PGlite and PostgreSQL drivers are optional providers
+- Runtime-neutral core built from standard JavaScript and Web APIs
+- Deno/JSR and ESM-only npm packages for Node.js 22+ and Bun
+- Cloudflare Worker/browser-compatible client, session, and workload boundary
+- Private embedded, shared embedded, and Hypervisor-routed execution topologies
+- Independent engine state for every session, including connections and sync
+- PGlite in-memory and persistent databases
+- Direct PostgreSQL, `LISTEN`/`NOTIFY`, and pinned transactions
+- Local-first PGlite-to-PostgreSQL synchronization
+- Type-safe CRUD helpers and Drizzle proxy integration
+- Raw binary session attachments for snapshots and byte-valued rows
+- Optional database providers: the core does not eagerly load PGlite or `pg`
 
----
+An embedded worker is a lifecycle and ownership boundary, not an isolation
+boundary. CPU-heavy database work still runs on the same event loop. Use a
+remote Oxian worker/process when memory, crash, security, or CPU isolation is
+required.
 
-## 📦 Installation
+## Installation
 
 ### Deno
 
-The built-in Deno providers load compatible npm engine versions lazily. No
-engine import-map entries are required for the default providers.
-
-```typescript
-// Full library
+```ts
 import { Ominipg } from "jsr:@oxian/ominipg";
 import { autoConfigure } from "jsr:@oxian/ominipg/auto";
-import { createPgProvider } from "jsr:@oxian/ominipg/pg";
 import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
-
-// CRUD module only (use with any database library)
-import { createCrudApi, defineSchema } from "jsr:@oxian/ominipg/crud";
+import { createPgProvider } from "jsr:@oxian/ominipg/pg";
 ```
 
-### Node.js
+### Node.js and Bun
 
-Ominipg publishes an ESM-only npm package for Node.js 22+.
-
-```bash
+```sh
 npm install @oxian/ominipg
 ```
 
-```typescript
-// Full library
+```ts
 import { Ominipg } from "@oxian/ominipg";
 import { autoConfigure } from "@oxian/ominipg/auto";
-import { createPgProvider } from "@oxian/ominipg/pg";
 import { createPGliteProvider } from "@oxian/ominipg/pglite";
-
-// CRUD module only (use with any database library)
-import { createCrudApi, defineSchema } from "@oxian/ominipg/crud";
+import { createPgProvider } from "@oxian/ominipg/pg";
 ```
 
-PGlite and node-postgres are optional peer dependencies. Install only the
-engines you use:
+Install only the optional engines used by the application:
 
-```bash
+```sh
 npm install @electric-sql/pglite
 npm install pg pg-logical-replication
 ```
 
----
+## Quick start
 
-## 🚀 Quick Start
+`autoConfigure()` selects provider descriptors from `url` and `syncUrl`:
 
-### Auto-Configured Providers
-
-Use `autoConfigure()` when your app already has `url` and optional `syncUrl`
-strings and you want Ominipg to inject the right optional providers.
-
-```typescript
-import { Ominipg } from "jsr:@oxian/ominipg";
-import { autoConfigure } from "jsr:@oxian/ominipg/auto";
-
-const db = await Ominipg.connect(autoConfigure({
-  url: dbUrl, // ":memory:", "file://...", or "postgresql://..."
-  syncUrl: dbSyncUrl, // optional PostgreSQL sync target
-}));
-```
-
-### In-Memory Database with Raw SQL
-
-```typescript
-import { Ominipg } from "jsr:@oxian/ominipg";
-import { autoConfigure } from "jsr:@oxian/ominipg/auto";
-
-// Create an in-memory database
+```ts
 const db = await Ominipg.connect(autoConfigure({
   url: ":memory:",
-  schemaSQL: [`
-    CREATE TABLE users (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT UNIQUE
-    )
-  `],
+  schemaSQL: [
+    `CREATE TABLE users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    )`,
+  ],
 }));
 
-// Execute queries
-await db.query("INSERT INTO users (name, email) VALUES ($1, $2)", [
-  "Alice",
-  "alice@example.com",
-]);
-
-const result = await db.query("SELECT * FROM users");
-console.log(result.rows);
+await db.query("INSERT INTO users(id, name) VALUES ($1, $2)", ["1", "Ada"]);
+const { rows } = await db.query("SELECT * FROM users");
 
 await db.close();
 ```
 
-### CRUD API with Type Safety
+Or supply explicit providers:
 
-```typescript
+```ts
+const db = await Ominipg.connect({
+  url: ":memory:",
+  pgliteProvider: createPGliteProvider(),
+});
+```
+
+### Transaction
+
+The callback stays on one long-lived workload session. PostgreSQL transactions
+pin a pool client until commit or rollback.
+
+```ts
+const user = await db.transaction(async (tx) => {
+  const { rows } = await tx.query<{ id: string }>(
+    "INSERT INTO users(id, name) VALUES ($1, $2) RETURNING id",
+    [crypto.randomUUID(), "Grace"],
+  );
+  await tx.query("INSERT INTO audit(user_id, action) VALUES ($1, $2)", [
+    rows[0].id,
+    "created",
+  ]);
+  return rows[0];
+});
+```
+
+Do not issue unrelated concurrent queries on the same `Ominipg` instance while
+its transaction callback is active.
+
+### Local-first sync
+
+```ts
+const db = await Ominipg.connect({
+  url: "file:///data/app.db",
+  syncUrl: remoteDatabaseUrl,
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
+  schemaSQL,
+});
+
+await db.query("INSERT INTO todos(id, title) VALUES ($1, $2)", [id, title]);
+const { pushed } = await db.sync();
+```
+
+### Typed CRUD
+
+```ts
 import { defineSchema, Ominipg } from "jsr:@oxian/ominipg";
-import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
-// Define schema with full type inference
 const schemas = defineSchema({
   users: {
     schema: {
@@ -144,13 +149,11 @@ const schemas = defineSchema({
       properties: {
         id: { type: "string" },
         name: { type: "string" },
-        email: { type: "string" },
         age: { type: "number" },
       },
-      required: ["id", "name", "email"],
+      required: ["id", "name"],
     },
     keys: [{ property: "id" }],
-    timestamps: true, // Automatic createdAt/updatedAt
   },
 });
 
@@ -160,464 +163,193 @@ const db = await Ominipg.connect({
   schemas,
 });
 
-// Type-safe CRUD operations
-const user = await db.crud.users.create({
-  id: "1",
-  name: "Alice",
-  email: "alice@example.com",
-  age: 30,
-});
-
-// MongoDB-style filters
-const adults = await db.crud.users.find({
-  age: { $gte: 18 },
-  email: { $like: "%@example.com" },
-});
-
-// Pagination and sorting
-const page1 = await db.crud.users.find(
-  {},
-  { limit: 10, skip: 0, sort: { createdAt: "desc" } },
-);
+await db.crud.users.create({ id: "1", name: "Ada", age: 36 });
+const adults = await db.crud.users.find({ age: { $gte: 18 } });
 ```
 
-### Local-First with Sync
+### Drizzle
 
-```typescript
-const db = await Ominipg.connect({
-  url: ":memory:", // Local database
-  syncUrl: "postgresql://user:pass@host:5432/db", // Remote sync
-  pgliteProvider: createPGliteProvider(),
-  pgProvider: createPgProvider(),
-  schemaSQL: [`CREATE TABLE users (...)`],
-});
-
-// Work locally (instant, no network)
-await db.query("INSERT INTO users ...");
-await db.query("UPDATE users ...");
-
-// Sync to remote when ready
-const result = await db.sync();
-console.log(`Pushed ${result.pushed} changes to remote`);
-```
-
-### Drizzle ORM Integration
-
-```typescript
+```ts
 import { Ominipg, withDrizzle } from "jsr:@oxian/ominipg";
-import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 import { drizzle } from "npm:drizzle-orm/pg-proxy";
-import { pgTable, serial, text } from "npm:drizzle-orm/pg-core";
-import { eq } from "npm:drizzle-orm";
-
-const users = pgTable("users", {
-  id: serial("id").primaryKey(),
-  name: text("name").notNull(),
-});
 
 const ominipg = await Ominipg.connect({
   url: ":memory:",
   pgliteProvider: createPGliteProvider(),
 });
 const db = await withDrizzle(ominipg, drizzle, { users });
-
-// Use Drizzle's API
-await db.insert(users).values({ name: "Alice" });
 const allUsers = await db.select().from(users);
 ```
 
----
+## Execution topologies
 
-## 🎯 Use Cases
+Database choice and execution topology are independent:
 
-### 1. Local-First Applications
+| Database      | `url`                                  | Typical use                                             |
+| ------------- | -------------------------------------- | ------------------------------------------------------- |
+| PGlite memory | `:memory:`                             | Tests and ephemeral state                               |
+| PGlite file   | `file://...`                           | Local/offline persistence where the runtime supports it |
+| PostgreSQL    | `postgres://...` or `postgresql://...` | Server database and notifications                       |
 
-Build offline-capable Deno or Node.js applications with persistent storage that
-sync when connected:
+| Topology          | Configuration                              | Transport and ownership                                                      |
+| ----------------- | ------------------------------------------ | ---------------------------------------------------------------------------- |
+| Private embedded  | Omit `oxian`                               | One private host/workload per connection; closed by `db.close()`             |
+| Shared embedded   | Pass `{ oxian: { dispatcher: host } }`     | Same isolate and event loop; application owns the host                       |
+| Hypervisor-routed | Pass a Hypervisor or compatible dispatcher | Workload may execute in another process/runtime; dispatcher owner manages it |
 
-```typescript
-const db = await Ominipg.connect({
-  url: "file://./data/app.db", // Persistent local storage
-  syncUrl: Deno.env.get("REMOTE_DB_URL"), // or process.env.REMOTE_DB_URL in Node.js
-  pgliteProvider: createPGliteProvider(),
-  pgProvider: createPgProvider(),
+All three use the same framed byte-stream session. The embedded path avoids
+socket, handshake, authentication, reconnect, and remote protocol overhead.
+
+### Shared in-process host
+
+```ts
+import { createWorkerHost } from "jsr:@oxian/oxian-js@0.20.0-rc.6/host";
+import {
+  createOminipgWorkload,
+  Ominipg,
+  OMINIPG_SESSION_WORKLOAD,
+} from "jsr:@oxian/ominipg";
+import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
+
+const host = createWorkerHost({
+  persistAcceptance: () => Promise.resolve(),
 });
-
-// App works offline
-await db.crud.todos.create({ title: "Buy milk", done: false });
-
-// Sync when online
-db.on("sync:end", (result) => {
-  console.log(`Synced ${result.pushed} changes`);
-});
-await db.sync();
-```
-
-### 2. Rapid Prototyping with Type Safety
-
-Get a full CRUD API with validation in seconds:
-
-```typescript
-const schemas = defineSchema({
-  posts: {
-    schema: {
-      type: "object",
-      properties: {
-        id: { type: "string" },
-        title: { type: "string" },
-        content: { type: "string" },
-        authorId: { type: "string" },
-      },
-      required: ["id", "title", "authorId"],
-    },
-    keys: [{ property: "id" }],
-    timestamps: true,
+const worker = host.attachInProcessWorker({
+  workerId: "application-databases",
+  capacity: 8,
+  workloads: {
+    [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
+      dependencies: { pgliteProvider: createPGliteProvider() },
+    }),
   },
 });
 
 const db = await Ominipg.connect({
   url: ":memory:",
-  pgliteProvider: createPGliteProvider(),
-  schemas,
+  oxian: { dispatcher: host },
 });
 
-// Fully typed CRUD operations ready to use
-await db.crud.posts.create({ ... });
-const posts = await db.crud.posts.find({ authorId: "123" });
+await db.close(); // closes only this engine session
+await worker.shutdown();
+await host.shutdown();
 ```
 
-### 3. Testing with In-Memory Database
+For a remotely attached workload, configure providers in
+`createOminipgWorkload({ dependencies })` or `resolveDependencies(metadata)`.
+Provider callbacks are process-local and cannot cross a session stream.
+Descriptor-only configuration can cross the stream, but a workload should own
+runtime-specific module selection when client and worker runtimes differ.
 
-Perfect for unit tests with instant setup/teardown:
+## Runtime support
 
-```typescript
-Deno.test("user registration", async () => {
-  const db = await Ominipg.connect({
-    url: ":memory:",
-    pgliteProvider: createPGliteProvider(),
-    schemas: userSchemas,
-  });
+| Surface                  | Deno               | Node 22+           | Bun                | Cloudflare Worker/browser      |
+| ------------------------ | ------------------ | ------------------ | ------------------ | ------------------------------ |
+| Client/session protocol  | Supported          | npm + CI           | npm + CI           | Web-API-compatible bundle      |
+| Embedded `WorkerHost`    | Supported          | Verified           | Verified in CI     | Same-isolate execution         |
+| Ominipg workload         | Supported          | Verified           | Verified in CI     | Provider-dependent             |
+| PGlite                   | Provider-dependent | Optional peer      | Optional peer      | Provider/platform limits apply |
+| `pg`/logical replication | Provider-dependent | Optional peers     | Package-dependent  | No generic built-in adapter    |
+| `file://` PGlite         | Runtime filesystem | Supported provider | Provider-dependent | Not available in an isolate    |
 
-  const user = await db.crud.users.create({
-    id: "1",
-    email: "test@example.com",
-  });
+Runtime-neutral means the Ominipg core does not import Deno APIs, Node builtins,
+Bun APIs, Cloudflare bindings, Web Workers, or `worker_threads`. Database engine
+support still depends on a provider that works in the chosen runtime. See
+[Runtime support](./docs/RUNTIMES.md).
 
-  assertEquals(user.email, "test@example.com");
+## API at a glance
 
-  await db.close(); // Clean up
-});
-```
+```ts
+await db.query(sql, params);
+await db.transaction(async (tx) => value);
 
-### 4. Standalone CRUD with Existing Database
-
-Use the CRUD module with any database library:
-
-```typescript
-import { defineSchema, createCrudApi } from "jsr:@oxian/ominipg/crud";
-import postgres from "npm:postgres";
-
-const sql = postgres(DATABASE_URL);
-
-// Create query adapter
-async function queryFn(sql: string, params?: unknown[]) {
-  const result = await sql.unsafe(sql, params);
-  return { rows: result };
-}
-
-// Get type-safe CRUD API
-const schemas = defineSchema({ users: { ... } });
-const crud = createCrudApi(schemas, queryFn);
-
-// Use with your existing database
-const users = await crud.users.find({ age: { $gte: 18 } });
-```
-
----
-
-## 📚 Core Concepts
-
-### Connection Modes
-
-| Mode                  | URL                     | Use Case                                                                   |
-| --------------------- | ----------------------- | -------------------------------------------------------------------------- |
-| **In-Memory**         | `:memory:`              | Testing, prototyping, temporary data                                       |
-| **Persistent**        | `file://./data.db`      | Local storage, offline-first apps                                          |
-| **Direct PostgreSQL** | `postgresql://...`      | Direct connection to PostgreSQL server                                     |
-| **Worker Mode**       | Any + `useWorker: true` | Isolate DB operations in a Deno Web Worker or Node `worker_threads` worker |
-
-### CRUD API Filters
-
-Ominipg supports MongoDB-style query operators:
-
-```typescript
-// Comparison operators
-{ age: 25 }                      // Equals
-{ age: { $ne: 25 } }            // Not equals
-{ age: { $gt: 18, $lt: 65 } }   // Greater than, less than
-{ age: { $gte: 18 } }           // Greater than or equal
-{ age: { $lte: 65 } }           // Less than or equal
-
-// Array operators
-{ status: { $in: ["active", "pending"] } }
-{ status: { $nin: ["deleted"] } }
-
-// String operators
-{ name: { $like: "A%" } }        // Starts with A
-{ email: { $ilike: "%gmail%" } }  // Contains gmail (case-insensitive)
-
-// Null checks
-{ deletedAt: null }              // IS NULL
-{ deletedAt: { $ne: null } }     // IS NOT NULL
-
-// Logical operators
-{ $and: [{ age: { $gte: 18 } }, { verified: true }] }
-{ $or: [{ role: "admin" }, { role: "moderator" }] }
-{ $not: { status: "banned" } }
-```
-
-### Type Inference
-
-Schemas automatically infer TypeScript types:
-
-```typescript
-const schemas = defineSchema({
-  users: {
-    schema: {/* ... */},
-    keys: [{ property: "id" }],
-  },
-});
-
-// Automatic type inference - no imports needed!
-type User = typeof schemas.users.$inferSelect;
-type NewUser = typeof schemas.users.$inferInsert;
-
-// Use with functions
-async function getUser(id: string): Promise<User> {
-  return await db.crud.users.findOne({ id });
-}
-```
-
----
-
-## 🔧 Configuration Options
-
-```typescript
-await Ominipg.connect({
-  // Database connection
-  url: ":memory:",                           // Required
-  syncUrl: "postgresql://...",               // Optional remote sync
-  pgliteProvider: createPGliteProvider(),    // Required for PGlite URLs
-  pgProvider: createPgProvider(),            // Required for PostgreSQL/sync
-  pgPoolMax: 5,                              // Direct pool; use >= 2 with listen()
-
-  // Schema and initialization
-  schemas: defineSchema({ ... }),            // CRUD schemas
-  schemaSQL: ["CREATE TABLE ..."],           // DDL statements
-
-  // PGlite extensions
-  pgliteExtensions: ["uuid_ossp", "vector"], // Extensions to load
-  pgliteConfig: {
-    initialMemory: 256 * 1024 * 1024,        // WASM memory limit
-  },
-
-  // Execution mode
-  useWorker: false,                          // PGlite in-process (default without sync)
-  // useWorker: true,                        // Worker / worker_threads
-});
-```
-
----
-
-## 🎨 API Overview
-
-### Core Database API
-
-```typescript
-// Execute raw SQL
-const result = await db.query(sql, params);
-
-// Sync with remote
-const syncResult = await db.sync();
+await db.sync();
 await db.syncSequences();
 
-// Events
-db.on("connected", () => console.log("Connected"));
-db.on("sync:end", (result) => console.log("Synced"));
-db.on("error", (error) => console.error(error));
-
-// Diagnostic info
-const info = await db.getDiagnosticInfo();
-
-// Direct PostgreSQL LISTEN/NOTIFY
-const subscription = await db.listen("jobs_ready", (notification) => {
-  console.log(notification.payload);
-});
+const subscription = await db.listen("jobs_ready", handler);
 await db.notify("jobs_ready", "job-id");
 await subscription.close();
 
-// Cleanup
+const snapshot = await db.dumpDataDir();
+const diagnostics = await db.getDiagnosticInfo();
 await db.close();
 ```
 
-### CRUD API
+PostgreSQL notifications are wake-up signals, not a durable queue. One listener
+connection is shared by each engine session, and `listen()` requires
+`pgPoolMax >= 2`.
 
-```typescript
-// Create operations
-await db.crud.users.create(data);
-await db.crud.users.createMany([data1, data2]);
+## Connection options
 
-// Read operations
-await db.crud.users.find(filter, options);
-await db.crud.users.findOne(filter);
+```ts
+await Ominipg.connect({
+  url: ":memory:",
+  syncUrl: "postgresql://...",
+  schemaSQL: ["CREATE TABLE ..."],
+  edgeId: crypto.randomUUID(),
+  lwwColumn: "updated_at",
+  initialSyncFrom: "2026-01-01T00:00:00.000Z",
+  skipInitialSync: false,
+  disableAutoPush: false,
 
-// Update operations
-await db.crud.users.update(filter, updates);
-await db.crud.users.update(filter, data, { upsert: true });
+  pgliteProvider: createPGliteProvider(),
+  pgProvider: createPgProvider(),
+  pgliteExtensions: ["uuid_ossp", "vector"],
+  pgliteMemoryProfile: "low-memory",
+  pgliteConfig: {},
+  pgPoolMax: 5,
 
-// Delete operations
-await db.crud.users.delete(filter);
+  oxian: {
+    dispatcher,
+    workload: OMINIPG_SESSION_WORKLOAD,
+    metadata: { tenantId },
+    target: { workerId },
+    signal,
+    deadlineAtMs,
+    maxFrameBytes: 512 * 1024 * 1024,
+  },
+  runtime: { getRssMb: optionalHostMemoryProbe },
+  schemas,
+  logMetrics: false,
+});
 ```
 
----
+`useWorker` remains accepted as a deprecated no-op for source migration. It no
+longer chooses a direct, Web Worker, or `worker_threads` path.
 
-## 📖 Documentation
+## Documentation
 
-Explore detailed guides and examples:
+- [Architecture](./docs/ARCHITECTURE.md)
+- [Oxian embedding and routing](./docs/OXIAN.md)
+- [Runtime support](./docs/RUNTIMES.md)
+- [Migrating to 0.9](./docs/MIGRATION_0_9.md)
+- [API reference](./docs/API.md)
+- [Quick reference](./docs/QUICK_REFERENCE.md)
+- [CRUD guide](./docs/CRUD.md)
+- [Drizzle integration](./docs/DRIZZLE.md)
+- [Sync guide](./docs/SYNC.md)
+- [PostgreSQL notifications](./docs/NOTIFICATIONS.md)
+- [PGlite memory characteristics](./docs/PGLITE.md)
+- [Extensions](./docs/EXTENSIONS.md)
+- [Historical 0.6 migration](./docs/MIGRATION_0_6.md)
 
-- **[Quick Reference](./docs/QUICK_REFERENCE.md)** - Fast lookup for common
-  operations
-- **[0.6 Migration Guide](./docs/MIGRATION_0_6.md)** - Upgrade from earlier
-  versions to the provider-based API
-- **[CRUD Guide](./docs/CRUD.md)** - Complete guide to the CRUD API
-- **[Sync Guide](./docs/SYNC.md)** - Local-first and synchronization
-- **[Drizzle Integration](./docs/DRIZZLE.md)** - Using Ominipg with Drizzle ORM
-- **[API Reference](./docs/API.md)** - Full API documentation
-- **[Architecture](./docs/ARCHITECTURE.md)** - How Ominipg works under the hood
-- **[Extensions](./docs/EXTENSIONS.md)** - PostgreSQL extensions support
+## Development
 
-### Examples
-
-Check out the `/examples` directory for complete, runnable examples:
-
-- [`quick-start.ts`](./examples/quick-start.ts) - Basic usage
-- [`with-drizzle-simple.ts`](./examples/with-drizzle-simple.ts) - Drizzle ORM
-  integration
-- [`crud-standalone.ts`](./examples/crud-standalone.ts) - CRUD module with other
-  libraries
-- [`pglite-extensions.ts`](./examples/pglite-extensions.ts) - Using PostgreSQL
-  extensions
-
----
-
-## 🛠️ Development
-
-### Prerequisites
-
-- **Deno** 2.x or higher
-- **Node.js** 22.x or higher (for npm package verification)
-- **PostgreSQL** (optional, for testing remote features)
-
-### Running Tests
-
-```bash
-# Run all tests
+```sh
+deno task check
 deno task test:deno
-
-# Run specific test
-deno test --allow-all --config deno.test.json test/crud.test.ts
-
-# With watch mode
-deno test --allow-all --config deno.test.json --watch
-```
-
-### Running Examples
-
-```bash
-deno run --allow-all --config deno.test.json examples/quick-start.ts
-deno run --allow-all --config deno.test.json examples/with-drizzle-simple.ts
-```
-
-### npm Build
-
-The npm package is generated with [`dnt`](https://github.com/denoland/dnt). No
-extra bundler is required; the Node worker is emitted as transformed ESM files
-inside the package.
-
-```bash
-deno task build:npm
 deno task test:npm-node
+deno task check:publish
+deno task verify
 ```
 
-The generated package is written to `./npm` and exposes:
+The verification workflow covers Deno, Node 22/24, Bun, and a browser-platform
+bundle suitable for Cloudflare Worker code. PostgreSQL integration tests require
+their documented environment variables.
 
-```typescript
-import { Ominipg } from "@oxian/ominipg";
-import { createCrudApi, defineSchema } from "@oxian/ominipg/crud";
-import { createPgProvider } from "@oxian/ominipg/pg";
-import { createPGliteProvider } from "@oxian/ominipg/pglite";
-```
+## License
 
----
+MIT License. See [LICENSE](./LICENSE).
 
-## 🗺️ Roadmap
-
-We're actively working on expanding Ominipg. See [ROADMAP.md](./ROADMAP.md) for
-details:
-
-- 🌐 **More Runtime Targets** - Bun and Browser compatibility
-- 🔄 **Bi-directional Sync** - Two-way synchronization with conflict resolution
-- 🗄️ **Pluggable Storage** - SQLite and other backend support
-- 🔤 **Column Aliases** - Map snake_case columns to camelCase in TypeScript
-
----
-
-## 🤝 Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for
-guidelines.
-
-Areas we'd love help with:
-
-- 🐛 Bug fixes and edge case handling
-- 📚 Documentation improvements
-- ✅ Test coverage expansion
-- 🚀 Performance optimizations
-- 🎨 Real-world examples
-
----
-
-## 📄 License
-
-MIT License - see [LICENSE](./LICENSE) for details.
-
----
-
-## 🙏 Acknowledgments
-
-Ominipg is built on the shoulders of giants:
-
-- **[PGlite](https://github.com/electric-sql/pglite)** - PostgreSQL in WASM
-- **[pg](https://node-postgres.com/)** - PostgreSQL client for Node.js
-- **[Drizzle ORM](https://orm.drizzle.team/)** - TypeScript ORM integration
-- **[Zod](https://zod.dev/)** - Schema validation
-
----
-
-## 📞 Support
-
-- 📖 **Documentation**: [./docs](./docs)
-- 🐛 **Issues**: [GitHub Issues](https://github.com/AxionCompany/ominipg/issues)
-- 💬 **Discussions**:
-  [GitHub Discussions](https://github.com/AxionCompany/ominipg/discussions)
-
----
-
-<div align="center">
-
-**Made with ❤️ by the Ominipg Team**
-
-[⭐ Star us on GitHub](https://github.com/AxionCompany/ominipg) |
-[📦 View on JSR](https://jsr.io/@oxian/ominipg)
-
-</div>
+Ominipg builds on [Oxian](https://jsr.io/@oxian/oxian-js),
+[PGlite](https://pglite.dev/), [node-postgres](https://node-postgres.com/), and
+[Drizzle ORM](https://orm.drizzle.team/).

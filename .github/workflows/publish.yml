@@ -1,8 +1,9 @@
 name: Publish
 on:
+  workflow_dispatch:
   push:
-    branches:
-      - main
+    tags:
+      - "v*"
 
 jobs:
   publish:
@@ -15,7 +16,10 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.9.2
-      - name: Verify packed consumer types
-        run: deno test --allow-all test/packed-types.test.ts
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify release
+        run: deno task verify
       - name: Publish package
         run: npx jsr publish

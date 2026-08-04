@@ -90,10 +90,56 @@ const provider = {
 const delay = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-Deno.test("direct notifications multiplex, isolate callbacks, notify, and clean up", async () => {
+Deno.test("PostgreSQL transactions pin one pool client per session", async () => {
   const db = await Ominipg.connect({
     url: "postgresql://test/test",
-    useWorker: false,
+    pgProvider: provider,
+  });
+  const pool = FakePool.latest!;
+  try {
+    await db.transaction(async (transaction) => {
+      await transaction.query("INSERT INTO entries(id) VALUES ($1)", [1]);
+      await transaction.query("SELECT * FROM entries");
+    });
+    const committed = pool.clients[1];
+    assertEquals(committed.queries.map(({ sql }) => sql), [
+      "BEGIN",
+      "INSERT INTO entries(id) VALUES ($1)",
+      "SELECT * FROM entries",
+      "COMMIT",
+    ]);
+    assertEquals(committed.released, true);
+
+    await assertRejects(
+      () =>
+        db.transaction(async (transaction) => {
+          await transaction.query("DELETE FROM entries");
+          throw new Error("rollback requested");
+        }),
+      Error,
+      "rollback requested",
+    );
+    const rolledBack = pool.clients[2];
+    assertEquals(rolledBack.queries.map(({ sql }) => sql), [
+      "BEGIN",
+      "DELETE FROM entries",
+      "ROLLBACK",
+    ]);
+    assertEquals(rolledBack.released, true);
+
+    await assertRejects(
+      () => db.sync(),
+      Error,
+      "Sync is disabled in direct Postgres mode",
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+Deno.test("session notifications multiplex, isolate callbacks, notify, and clean up", async () => {
+  const db = await Ominipg.connect({
+    url: "postgresql://test/test",
     pgProvider: provider,
     pgPoolMax: 4,
   });
@@ -130,6 +176,7 @@ Deno.test("direct notifications multiplex, isolate callbacks, notify, and clean 
     payload: "result-1",
     processId: 42,
   });
+  await delay(0);
 
   assertEquals(received, [
     "first:command-1",
@@ -178,7 +225,6 @@ Deno.test("direct notifications multiplex, isolate callbacks, notify, and clean 
 Deno.test("listener reconnects and reissues active LISTEN channels", async () => {
   const db = await Ominipg.connect({
     url: "postgresql://test/test",
-    useWorker: false,
     pgProvider: provider,
   });
   const pool = FakePool.latest!;
@@ -202,6 +248,7 @@ Deno.test("listener reconnects and reissues active LISTEN channels", async () =>
     true,
   );
   replacement.notify({ channel: "events", payload: "ok", processId: 9 });
+  await delay(0);
   assertEquals(received, ["ok"]);
   assertEquals(states, ["reconnecting", "connected"]);
 
@@ -211,7 +258,6 @@ Deno.test("listener reconnects and reissues active LISTEN channels", async () =>
 Deno.test("notification APIs reject unsafe channels and undersized pools", async () => {
   const db = await Ominipg.connect({
     url: "postgresql://test/test",
-    useWorker: false,
     pgProvider: provider,
     pgPoolMax: 1,
   });
@@ -236,7 +282,6 @@ Deno.test("notification APIs reject unsafe channels and undersized pools", async
   try {
     await Ominipg.connect({
       url: "postgresql://test/test",
-      useWorker: false,
       pgProvider: provider,
       pgPoolMax: 0,
     });

@@ -2,9 +2,9 @@
 
 Complete API documentation for Ominipg.
 
-Ominipg supports Deno and Node.js 22+. The npm package is ESM-only. The built-in
-Deno providers load compatible npm engine versions lazily; Node.js apps install
-the engines they use as optional peer dependencies.
+Ominipg's client and Oxian workload core are runtime-neutral. Use JSR in Deno or
+the ESM-only npm package in Node.js 22+ and Bun. Cloudflare/browser execution is
+available when the selected database provider supports that platform.
 
 ---
 
@@ -13,6 +13,7 @@ the engines they use as optional peer dependencies.
 - [Ominipg Class](#ominipg-class)
 - [Connection Options](#connection-options)
 - [Query Methods](#query-methods)
+- [Notification Methods](#notification-methods)
 - [Sync Methods](#sync-methods)
 - [CRUD API](#crud-api)
 - [Drizzle Integration](#drizzle-integration)
@@ -35,6 +36,7 @@ import type {
   CrudSchemas,
   OminipgClientEvents,
   OminipgConnectionOptions,
+  OminipgSessionTransport,
 } from "jsr:@oxian/ominipg";
 import type { PgProvider } from "jsr:@oxian/ominipg/pg";
 import type { PGliteProvider } from "jsr:@oxian/ominipg/pglite";
@@ -48,6 +50,7 @@ import type {
   CrudSchemas,
   OminipgClientEvents,
   OminipgConnectionOptions,
+  OminipgSessionTransport,
 } from "@oxian/ominipg";
 import type { PgProvider } from "@oxian/ominipg/pg";
 import type { PGliteProvider } from "@oxian/ominipg/pglite";
@@ -55,7 +58,9 @@ import type { PGliteProvider } from "@oxian/ominipg/pglite";
 
 ### `Ominipg.connect(options)`
 
-Creates a new database connection.
+Creates a new database connection and opens one long-lived Oxian workload
+session. Omit `oxian` for a private same-isolate host, or inject an
+application-owned dispatcher for shared or routed execution.
 
 **Signature:**
 
@@ -150,33 +155,26 @@ Configuration object for database connections.
 
 ```typescript
 interface OminipgConnectionOptions {
-  // Database URL
   url?: string;
-
-  // SQL statements to initialize schema
-  schemaSQL?: string[];
-
-  // Remote database URL for syncing
   syncUrl?: string;
-
-  // Engine providers
+  edgeId?: string;
+  lwwColumn?: string;
+  schemaSQL?: string[];
+  initialSyncFrom?: string;
+  skipInitialSync?: boolean;
+  disableAutoPush?: boolean;
+  pgliteExtensions?: string[];
+  pgliteConfig?: PGliteConfig;
+  pgliteMemoryProfile?: "default" | "low-memory";
   pgliteProvider?: PGliteProvider;
   pgProvider?: PgProvider;
-
-  // Force worker mode (default: auto-detect)
+  pgPoolMax?: number;
+  oxian?: OminipgSessionTransport;
+  runtime?: { getRssMb?: () => number | null };
+  /** @deprecated Accepted as a no-op. */
   useWorker?: boolean;
-
-  // PGlite extensions to load
-  pgliteExtensions?: string[];
-
-  // Additional options forwarded to the embedded PGlite engine
-  pgliteConfig?: PGliteConfig;
-
-  // CRUD schemas definition
-  schemas?: CrudSchemas;
-
-  // Enable performance metrics logging
   logMetrics?: boolean;
+  schemas?: CrudSchemas;
 }
 
 type PGliteConfig = {
@@ -237,27 +235,32 @@ When provided, enables local-first mode with sync capabilities.
 syncUrl: "postgresql://user:pass@myserver.com:5432/prod_db";
 ```
 
-#### `useWorker` (optional)
+#### `oxian` (optional)
 
-- **Type:** `boolean`
-- **Default:** Auto-detected based on configuration
-- **Description:** Force worker mode or direct mode
+- **Type:** `OminipgSessionTransport`
+- **Default:** A private embedded `WorkerHost`
+- **Description:** Supplies a shared `WorkerHost`, Hypervisor, or structurally
+  compatible dispatcher.
 
-**Auto-detection rules:**
-
-- PostgreSQL + no sync = Direct mode (best performance)
-- PGlite + no sync = in-process mode by default
-- Sync enabled or `useWorker: true` = Worker mode (Deno Web Worker or Node
-  `worker_threads`)
-
-In Ominipg 0.6+, PGlite without sync defaults to in-process execution unless
-`useWorker: true` is provided. Sync still uses worker mode by default.
-
-**Example:**
-
-```typescript
-useWorker: true; // Force worker mode
+```ts
+type OminipgSessionTransport = Readonly<{
+  dispatcher: OminipgDispatcher;
+  workload?: string;
+  target?: { workerId: string };
+  metadata?: JsonObject;
+  deadlineAtMs?: number;
+  signal?: AbortSignal;
+  maxFrameBytes?: number;
+}>;
 ```
+
+`db.close()` never shuts down an injected dispatcher. See
+[Oxian embedding and routing](./OXIAN.md).
+
+#### `useWorker` (deprecated)
+
+Accepted as a no-op for migration. Ominipg is always an Oxian workload session;
+this field no longer selects an inline, Web Worker, or `worker_threads` path.
 
 #### `pgliteExtensions` (optional)
 
@@ -297,9 +300,9 @@ pgliteConfig: {
 - **Description:** Loads PGlite only when a `:memory:` or `file://` connection
   is used. Import `createPGliteProvider` from `@oxian/ominipg/pglite` or
   `jsr:@oxian/ominipg/pglite`.
-- **Worker mode:** Custom callback providers are supported in-process. Worker
-  mode requires a provider created with module specifiers, such as the default
-  `createPGliteProvider()`, because worker messages must be serializable.
+- **External dispatcher:** Put callback providers in
+  `createOminipgWorkload({ dependencies })`. Only module descriptors cross the
+  session from client options.
 
 #### `pgProvider` (required for PostgreSQL URLs or sync)
 
@@ -307,9 +310,9 @@ pgliteConfig: {
 - **Description:** Loads `pg` and logical replication support only when direct
   PostgreSQL or sync features are used. Import `createPgProvider` from
   `@oxian/ominipg/pg` or `jsr:@oxian/ominipg/pg`.
-- **Worker mode:** Custom callback providers are supported for direct in-process
-  PostgreSQL. Sync and worker mode require serializable module specifiers, such
-  as the default `createPgProvider()`.
+- **External dispatcher:** Put callback providers in
+  `createOminipgWorkload({ dependencies })`, especially when client and worker
+  runtimes differ.
 
 #### `schemas` (optional)
 
@@ -377,6 +380,56 @@ const result = await db.query<User>("SELECT * FROM users");
 ### `queryRaw(sql, params?)` (deprecated)
 
 Alias for `query()`. Use `query()` instead.
+
+### `transaction(callback)`
+
+Runs a callback between `BEGIN` and `COMMIT`, rolling back when the callback or
+commit fails.
+
+```ts
+async transaction<T>(
+  callback: (transaction: Ominipg) => T | Promise<T>,
+): Promise<T>
+```
+
+PostgreSQL execution pins one pool client for the transaction. Avoid unrelated
+concurrent queries on the same `Ominipg` instance during the callback.
+
+```ts
+const result = await db.transaction(async (tx) => {
+  await tx.query("INSERT INTO users(id, name) VALUES ($1, $2)", [id, name]);
+  return await tx.query("SELECT * FROM users WHERE id = $1", [id]);
+});
+```
+
+---
+
+## Notification Methods
+
+### `listen(channel, handler)`
+
+Subscribes to a strict PostgreSQL channel and returns a `PgSubscription`.
+
+```ts
+const subscription = await db.listen("jobs_ready", (notification) => {
+  console.log(notification.channel, notification.payload);
+});
+
+subscription.onStateChange((state) => console.log(state));
+subscription.onError((error) => console.error(error));
+await subscription.close();
+```
+
+### `notify(channel, payload?)`
+
+Calls parameterized `pg_notify` on the workload's main PostgreSQL database.
+
+```ts
+await db.notify("jobs_ready", "job-id");
+```
+
+Notifications require PostgreSQL and `pgPoolMax >= 2`; PGlite rejects both
+methods. See [PostgreSQL notifications](./NOTIFICATIONS.md).
 
 ---
 
@@ -454,6 +507,18 @@ console.log(`Synced ${result.synced} sequences`);
 
 ## Diagnostic Methods
 
+### `dumpDataDir()`
+
+Returns a `Blob` snapshot of the active PGlite data directory. Binary snapshot
+bytes use raw session attachments rather than base64.
+
+```ts
+const snapshot = await db.dumpDataDir();
+```
+
+PostgreSQL connections reject this method. The default decoded frame limit is
+512 MiB; configure matching client and workload limits for larger snapshots.
+
 ### `getDiagnosticInfo()`
 
 Get information about the database state.
@@ -485,6 +550,22 @@ console.log(info);
 
 ## Lifecycle Methods
 
+### `Ominipg.prepare(options)`
+
+Opens and immediately closes a `file://` PGlite database. Use it in a setup or
+migration process to initialize schema before a memory-sensitive application
+opens the database.
+
+```ts
+await Ominipg.prepare({
+  url: "file:///data/app.db",
+  pgliteProvider: createPGliteProvider(),
+  schemaSQL,
+});
+```
+
+`prepare()` rejects non-file URLs and `syncUrl`.
+
 ### `close()`
 
 Close the database connection and cleanup resources.
@@ -504,6 +585,10 @@ await db.close();
 **Events:**
 
 - Emits `"close"` event when connection is closed
+
+For a private embedded session, `close()` also shuts down its private Oxian
+worker and host. For an injected dispatcher it closes only the database session;
+the embedding application owns host/Hypervisor shutdown.
 
 ---
 
@@ -678,6 +763,8 @@ function withDrizzle<TDrizzle, TSchema extends Record<string, unknown>>(
 
 - `sync()` - Sync local changes
 - `syncSequences()` - Sync sequences
+- `transaction(callback)` - Run a workload-scoped transaction
+- `dumpDataDir()` - Snapshot PGlite data
 - `getDiagnosticInfo()` - Get diagnostic info
 - `close()` - Close connection
 - `queryRaw(sql, params)` - Execute raw SQL
@@ -765,10 +852,16 @@ db.on("close", () => {
 ```typescript
 interface OminipgConnectionOptions {
   url?: string;
-  schemaSQL?: string[];
   syncUrl?: string;
-  useWorker?: boolean;
+  schemaSQL?: string[];
   pgliteExtensions?: string[];
+  pgliteConfig?: PGliteConfig;
+  pgliteMemoryProfile?: "default" | "low-memory";
+  pgliteProvider?: PGliteProvider;
+  pgProvider?: PgProvider;
+  pgPoolMax?: number;
+  oxian?: OminipgSessionTransport;
+  useWorker?: boolean; // deprecated no-op
   schemas?: CrudSchemas;
   logMetrics?: boolean;
 }
@@ -788,12 +881,16 @@ type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
 type OminipgDrizzleMixin = {
   sync: () => Promise<{ pushed: number }>;
   syncSequences: () => Promise<{ synced: number }>;
+  dumpDataDir: () => Promise<Blob>;
   getDiagnosticInfo: () => Promise<Record<string, unknown>>;
   close: () => Promise<void>;
   queryRaw: <TRow = Record<string, unknown>>(
     sql: string,
     params?: unknown[],
   ) => Promise<{ rows: TRow[] }>;
+  transaction: <T>(
+    callback: (transaction: Ominipg) => T | Promise<T>,
+  ) => Promise<T>;
   _ominipg: Ominipg;
 };
 ```
@@ -857,31 +954,24 @@ db.on("error", (error) => {
 });
 ```
 
-### 4. Choose the Right Mode
+### 4. Choose the Right Topology
 
-```typescript
-// For PostgreSQL without sync - use direct mode (faster)
-const db = await Ominipg.connect({
-  url: "postgresql://...",
-  pgProvider: createPgProvider(),
-  useWorker: false,
-});
+Use the private embedded default when the database can share the application's
+event loop and lifecycle. Inject a shared host when one application owns several
+workloads. Route to a remote Oxian worker when CPU, memory, crash, or security
+isolation matters. The public Ominipg API is the same for all three.
 
-// For local-first sync - use worker mode (default)
-const db = await Ominipg.connect({
-  url: ":memory:",
-  syncUrl: "postgresql://...",
-  pgliteProvider: createPGliteProvider(),
-  pgProvider: createPgProvider(),
-  // useWorker: true is default
-});
-```
+Provider callbacks should be configured on the workload for shared or routed
+execution.
 
 ---
 
 ## See Also
 
-- [0.6 Migration Guide](./MIGRATION_0_6.md)
+- [0.9 Migration Guide](./MIGRATION_0_9.md)
+- [Oxian embedding and routing](./OXIAN.md)
+- [Runtime support](./RUNTIMES.md)
+- [Historical 0.6 Migration Guide](./MIGRATION_0_6.md)
 - [CRUD API Guide](./CRUD.md)
 - [Drizzle Integration](./DRIZZLE.md)
 - [Sync Guide](./SYNC.md)

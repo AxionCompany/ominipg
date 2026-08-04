@@ -1,5 +1,5 @@
-import type { InitMsg } from "../../shared/types.ts";
-import { mainDb, mainDbType, syncPool } from "../db.ts";
+import type { OminipgEngineConfig } from "../../shared/types.ts";
+import { type EngineState, requireMainDb } from "../db.ts";
 import { ensureRemoteSchema } from "../schema.ts";
 import { startPuller, stopPuller } from "./puller.ts";
 import { pushBatch } from "./pusher.ts";
@@ -9,24 +9,27 @@ import { performInitialSync } from "./initial.ts";
  * Starts all synchronization services.
  * @param cfg The initialization configuration.
  */
-export async function startSyncServices(cfg: InitMsg) {
-  if (!syncPool) return;
+export async function startSyncServices(
+  state: EngineState,
+  cfg: OminipgEngineConfig,
+) {
+  if (!state.syncPool) return;
 
   // Ensure remote schema exists before starting sync
-  await ensureRemoteSchema(cfg.schemaSQL ?? []);
+  await ensureRemoteSchema(state, cfg.schemaSQL ?? []);
 
   // Perform initial data sync from remote to local
   if (!cfg.skipInitialSync) {
-    await performInitialSync(cfg.initialSyncFrom);
+    await performInitialSync(state, cfg.initialSyncFrom);
   }
 
   // Start the replication puller
-  await startPuller(cfg);
+  await startPuller(state, cfg);
 
   // If using PGlite, set up a listener to automatically push changes
-  if (mainDbType === "pglite" && !cfg.disableAutoPush) {
-    mainDb.listen?.("outbox_new", () => {
-      pushBatch().catch((err) => console.error("Auto-push failed:", err));
+  if (state.mainDbType === "pglite" && !cfg.disableAutoPush) {
+    requireMainDb(state).listen?.("outbox_new", () => {
+      pushBatch(state).catch((err) => console.error("Auto-push failed:", err));
     });
   }
 }
@@ -34,8 +37,8 @@ export async function startSyncServices(cfg: InitMsg) {
 /**
  * Stops all synchronization services.
  */
-export async function stopSyncServices() {
-  if (!syncPool) return;
+export async function stopSyncServices(state: EngineState) {
+  if (!state.syncPool) return;
 
-  await stopPuller();
+  await stopPuller(state);
 }

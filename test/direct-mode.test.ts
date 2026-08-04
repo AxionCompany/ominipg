@@ -6,12 +6,12 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const PG_URL = Deno.env.get("DB_URL_PG"); // postgres:// URL
 if (!PG_URL) {
   Deno.test({
-    name: "Direct Postgres mode: skipped (missing DB_URL_PG)",
+    name: "PostgreSQL workload session: skipped (missing DB_URL_PG)",
     ignore: true,
     fn: () => {},
   });
 } else {
-  Deno.test("Direct Postgres mode: DDL setup via schemaSQL, basic query, and cleanup", async () => {
+  Deno.test("PostgreSQL workload session: schema, query, and cleanup", async () => {
     const schemaDDL = [
       `CREATE TABLE IF NOT EXISTS test_items (
                 id SERIAL PRIMARY KEY,
@@ -42,7 +42,7 @@ if (!PG_URL) {
       const { rows } = await db.query("SELECT name FROM test_items");
       assertEquals(rows.length >= 1, true);
 
-      // Direct mode must not allow sync
+      // A PostgreSQL main database without syncUrl must not allow sync.
       await assertRejects(
         () => db.sync(),
         Error,

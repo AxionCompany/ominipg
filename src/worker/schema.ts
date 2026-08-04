@@ -1,19 +1,14 @@
-import {
-  mainDb,
-  mainDbType,
-  meta,
-  syncPool,
-} from "./db.ts";
+import { type EngineState, requireMainDb } from "./db.ts";
 import { ident } from "./utils.ts";
 import type { PgPoolClient } from "./db.ts";
-import { getRssMb } from "./utils.ts";
 
 /**
  * Attaches the outbox trigger to a single table.
  * Idempotent, and ignores errors if the trigger already exists.
  * @param tableName The name of the table to attach the trigger to.
  */
-async function ensureTrigger(tableName: string) {
+async function ensureTrigger(state: EngineState, tableName: string) {
+  const mainDb = requireMainDb(state);
   try {
     await mainDb.exec(`
           CREATE TRIGGER outbox_trigger_${tableName}
@@ -29,8 +24,11 @@ async function ensureTrigger(tableName: string) {
   }
 }
 
-function getSkippableExtension(stmt: string): string | null {
-  if (mainDbType !== "pglite") return null;
+function getSkippableExtension(
+  state: EngineState,
+  stmt: string,
+): string | null {
+  if (state.mainDbType !== "pglite") return null;
   const withoutComments = stmt.replace(/^\s*--.*$/gm, "").trimStart();
   const match = withoutComments.match(
     /^\s*CREATE\s+EXTENSION(?:\s+IF\s+NOT\s+EXISTS)?\s+"?([A-Za-z0-9_\-]+)"?/i,
@@ -41,8 +39,12 @@ function getSkippableExtension(stmt: string): string | null {
   return match[1].toLowerCase();
 }
 
-async function tryHandleDuplicateObjectDoBlock(stmt: string): Promise<boolean> {
-  if (mainDbType !== "pglite") return false;
+async function tryHandleDuplicateObjectDoBlock(
+  state: EngineState,
+  stmt: string,
+): Promise<boolean> {
+  if (state.mainDbType !== "pglite") return false;
+  const mainDb = requireMainDb(state);
   const doMatch = stmt.match(
     /^\s*DO\s+\$\$([\s\S]*?)\$\$\s*(LANGUAGE\s+\w+\s*)?;?\s*$/i,
   );
@@ -57,7 +59,10 @@ async function tryHandleDuplicateObjectDoBlock(stmt: string): Promise<boolean> {
   if (beginIndex === -1) return false;
   const exceptionIndex = lowerBody.indexOf("exception", beginIndex);
   if (exceptionIndex === -1) return false;
-  const statementsSection = body.slice(beginIndex + "begin".length, exceptionIndex).trim();
+  const statementsSection = body.slice(
+    beginIndex + "begin".length,
+    exceptionIndex,
+  ).trim();
   if (!statementsSection) return false;
 
   const statements = statementsSection
@@ -90,7 +95,8 @@ async function tryHandleDuplicateObjectDoBlock(stmt: string): Promise<boolean> {
  * Ensures all user tables have the outbox trigger attached.
  * This is only necessary for PGlite, as PostgreSQL uses logical replication.
  */
-async function ensureAllTriggersExist() {
+async function ensureAllTriggersExist(state: EngineState) {
+  const mainDb = requireMainDb(state);
   const tablesResult = await mainDb.query(`
       SELECT tablename FROM pg_tables 
       WHERE schemaname = 'public' 
@@ -99,14 +105,15 @@ async function ensureAllTriggersExist() {
     `);
 
   for (const row of tablesResult.rows as Array<{ tablename: string }>) {
-    await ensureTrigger(row.tablename);
+    await ensureTrigger(state, row.tablename);
   }
 }
 
 /**
  * Creates the trigger function used by PGlite to capture changes.
  */
-async function createTriggerFunction() {
+async function createTriggerFunction(state: EngineState) {
+  const mainDb = requireMainDb(state);
   await mainDb.exec(`
       CREATE OR REPLACE FUNCTION outbox_trigger_fn()
       RETURNS TRIGGER AS $$
@@ -158,7 +165,8 @@ async function createTriggerFunction() {
 /**
  * Creates the tables and triggers required for the synchronization mechanism.
  */
-async function createSyncInfrastructure() {
+async function createSyncInfrastructure(state: EngineState) {
+  const mainDb = requireMainDb(state);
   await mainDb.exec(`
       CREATE TABLE IF NOT EXISTS _sync_state(
         id INT PRIMARY KEY DEFAULT 1,
@@ -177,9 +185,9 @@ async function createSyncInfrastructure() {
       );
     `);
 
-  if (mainDbType === "pglite") {
-    await createTriggerFunction();
-    await ensureAllTriggersExist();
+  if (state.mainDbType === "pglite") {
+    await createTriggerFunction(state);
+    await ensureAllTriggersExist(state);
   }
 }
 
@@ -189,37 +197,39 @@ async function createSyncInfrastructure() {
  * @param includeSyncInfrastructure Whether to create the sync tables and triggers.
  */
 export async function bootstrapSchema(
+  state: EngineState,
   ddl: string[],
   includeSyncInfrastructure: boolean,
 ) {
-  
   for (const stmt of ddl) {
-    const skippableExtension = getSkippableExtension(stmt);
+    const skippableExtension = getSkippableExtension(state, stmt);
     if (skippableExtension) {
       continue;
     }
-    if (await tryHandleDuplicateObjectDoBlock(stmt)) {
-      console.log("Handled DO $$ ... duplicate_object block in TypeScript for PGlite");
+    if (await tryHandleDuplicateObjectDoBlock(state, stmt)) {
+      console.log(
+        "Handled DO $$ ... duplicate_object block in TypeScript for PGlite",
+      );
       continue;
     }
     try {
-      await mainDb.exec(stmt);
+      await requireMainDb(state).exec(stmt);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`DDL execution failed (this may be ok):`, message);
     }
   }
- 
-  if (includeSyncInfrastructure) {
-    await createSyncInfrastructure();
-  }
 
+  if (includeSyncInfrastructure) {
+    await createSyncInfrastructure(state);
+  }
 }
 
 /**
  * Ensures the remote database has the same schema as defined in the DDL.
  */
-export async function ensureRemoteSchema(ddl: string[]) {
+export async function ensureRemoteSchema(state: EngineState, ddl: string[]) {
+  const syncPool = state.syncPool;
   if (!syncPool || ddl.length === 0) return;
 
   const client = await syncPool.connect();
@@ -248,10 +258,11 @@ export async function ensureRemoteSchema(ddl: string[]) {
  * @param tableName The name of the table to create.
  */
 export async function createTableFromRemote(
+  state: EngineState,
   client: PgPoolClient,
   tableName: string,
 ) {
-  if (!syncPool) {
+  if (!state.syncPool) {
     throw new Error("Cannot create table from remote: no sync pool available.");
   }
 
@@ -270,7 +281,7 @@ export async function createTableFromRemote(
     for (
       const seqRow of sequencesResult.rows as Array<{ sequencename: string }>
     ) {
-      await mainDb.exec(
+      await requireMainDb(state).exec(
         `CREATE SEQUENCE IF NOT EXISTS ${ident(seqRow.sequencename)}`,
       );
     }
@@ -340,15 +351,15 @@ export async function createTableFromRemote(
     })`;
 
     // Execute locally
-    await mainDb.exec(createTableSQL);
+    await requireMainDb(state).exec(createTableSQL);
 
     // If using PGlite, add the outbox trigger
-    if (mainDbType === "pglite") {
-      await ensureTrigger(tableName);
+    if (state.mainDbType === "pglite") {
+      await ensureTrigger(state, tableName);
     }
 
     // Invalidate meta cache for this table
-    meta.delete(tableName);
+    state.meta.delete(tableName);
   } catch (error) {
     // Handle race condition where table was created by another process
     const message = error instanceof Error ? error.message : String(error);
@@ -364,11 +375,15 @@ export async function createTableFromRemote(
  * @param table The name of the table.
  * @param providedClient Optional client to use for the query.
  */
-export async function ensureMeta(table: string, providedClient?: PgPoolClient) {
-  if (meta.has(table)) return;
+export async function ensureMeta(
+  state: EngineState,
+  table: string,
+  providedClient?: PgPoolClient,
+) {
+  if (state.meta.has(table)) return;
 
   // If a client is provided, use it. Otherwise, always use the main local DB.
-  const client = providedClient ?? mainDb;
+  const client = providedClient ?? requireMainDb(state);
 
   try {
     const query = `
@@ -393,7 +408,7 @@ export async function ensureMeta(table: string, providedClient?: PgPoolClient) {
 
     if (result.rows.length === 0) {
       // Fallback for new tables not yet in remote, or for non-syncing DB
-      meta.set(table, { pk: ["id"], non: [] });
+      state.meta.set(table, { pk: ["id"], non: [] });
       return;
     }
 
@@ -403,7 +418,7 @@ export async function ensureMeta(table: string, providedClient?: PgPoolClient) {
     );
 
     const finalPk = pk.length > 0 ? pk : ["id"];
-    meta.set(table, { pk: finalPk, non });
+    state.meta.set(table, { pk: finalPk, non });
   } finally {
     // This function should not be responsible for releasing clients it didn't create.
   }

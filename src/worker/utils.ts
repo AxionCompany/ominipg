@@ -1,5 +1,3 @@
-export { getRssMb } from "../runtime/mod.ts";
-
 /**
  * Ensures an identifier is safe for use in a SQL query.
  * Throws an error for invalid identifiers.
