@@ -1,7 +1,7 @@
 /**
  * @module
  *
- * Ominipg - The flexible, all-in-one toolkit for PostgreSQL in Deno.
+ * Ominipg - Runtime-neutral PostgreSQL and PGlite sessions powered by Oxian.
  *
  * This module provides the main Ominipg class for connecting to PostgreSQL databases
  * (either in-memory via PGlite, persistent file-based, or direct PostgreSQL connections),
@@ -10,10 +10,12 @@
  * @example
  * ```typescript
  * import { Ominipg } from "jsr:@oxian/ominipg";
+ * import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
  *
  * // Connect to an in-memory database
  * const db = await Ominipg.connect({
  *   url: ":memory:",
+ *   pgliteProvider: createPGliteProvider(),
  *   schemaSQL: ["CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)"]
  * });
  *
@@ -27,6 +29,7 @@
  * @example
  * ```typescript
  * import { Ominipg, defineSchema } from "jsr:@oxian/ominipg";
+ * import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
  *
  * // Connect with CRUD API
  * const schemas = defineSchema({
@@ -40,187 +43,67 @@
  *   }
  * });
  *
- * const db = await Ominipg.connect({ url: ":memory:", schemas });
+ * const db = await Ominipg.connect({
+ *   url: ":memory:",
+ *   pgliteProvider: createPGliteProvider(),
+ *   schemas,
+ * });
  * const user = await db.crud.users.create({ id: "1", name: "Alice" });
  * ```
  */
 
-import { TypedEmitter } from "npm:tiny-typed-emitter@2.1.0";
+import { TypedEmitter } from "./emitter.ts";
 import type {
   OminipgClientEvents,
   OminipgConnectionOptions,
   PgNotification,
   PgSubscription,
 } from "./types.ts";
-import { PgListenerHub, validateNotificationChannel } from "./notifications.ts";
+import { validateNotificationChannel } from "./notifications.ts";
 import {
-  createDatabaseWorker,
-  getRssMb,
-  type RuntimeWorker,
-} from "../runtime/mod.ts";
-import { InProcessWorker } from "../worker/in_process.ts";
+  createEmbeddedOminipgSession,
+  type OminipgSessionClient,
+  openOminipgSession,
+} from "../session/index.ts";
 import type {
-  CloseMsg,
-  DiagnosticMsg,
-  DumpDataDirMsg,
-  ExecMsg,
-  InitMsg,
-  PgPool,
-  PgProvider,
-  ResponseMsg,
-  SyncMsg,
-  SyncSeqMsg,
-  WorkerMsg,
-} from "../shared/types.ts";
+  OminipgProviderDescriptor,
+  OminipgSessionInitConfig,
+} from "../session/protocol.ts";
 
 import type { CrudApi, CrudSchemas } from "./crud/types.ts";
 import { createCrudApi } from "./crud/index.ts";
 
-class RequestManager {
-  private _id = 0;
-  private readonly pending = new Map<
-    number,
-    {
-      resolve: (value: ResponseMsg | unknown) => void;
-      reject: (reason?: unknown) => void;
-      timeoutId: number;
-    }
-  >();
-
-  constructor(
-    private readonly worker: RuntimeWorker,
-    private readonly emitter: TypedEmitter<OminipgClientEvents>,
-  ) {
-    this.worker.addEventListener("message", this.handleMessage.bind(this));
-  }
-
-  private handleMessage(event: MessageEvent<ResponseMsg>) {
-    const msg = event.data;
-    const reqId = msg.reqId;
-
-    if (msg.type === "error" && !reqId) {
-      this.emitter.emit("error", new Error(msg.error));
-      return;
-    }
-
-    if (!reqId || !this.pending.has(reqId)) {
-      return; // Not a message we are waiting for
-    }
-
-    const deferred = this.pending.get(reqId)!;
-    clearTimeout(deferred.timeoutId);
-    this.pending.delete(reqId);
-
-    if (msg.type === "error") {
-      deferred.reject(new Error(msg.error));
-    } else {
-      // Exclude 'type' and 'reqId' from the resolved data
-      const { type: _type, reqId: _reqId, ...data } = msg;
-      deferred.resolve(data);
-    }
-  }
-
-  public request<T>(
-    message: Omit<WorkerMsg, "reqId">,
-    timeout: number = 30000,
-  ): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const reqId = ++this._id;
-
-      const timeoutId = setTimeout(() => {
-        this.pending.delete(reqId);
-        reject(
-          new Error(
-            `Database request '${message.type}' timed out after ${timeout}ms`,
-          ),
-        );
-      }, timeout);
-
-      // Wrap the Promise's resolve to satisfy our stored callback type
-      this.pending.set(reqId, {
-        resolve: (value: unknown) => resolve(value as T),
-        reject,
-        timeoutId: Number(timeoutId),
-      });
-
-      this.worker.postMessage({ ...message, reqId });
-    });
-  }
-
-  public post(message: Omit<WorkerMsg, "reqId">) {
-    this.worker.postMessage(message);
-  }
-}
-
-function toWorkerPGliteProvider(
+function describePGliteProvider(
   provider: OminipgConnectionOptions["pgliteProvider"],
-) {
+): OminipgProviderDescriptor | undefined {
   if (!provider) return undefined;
-  if (!provider.moduleSpecifier) {
-    throw new Error(
-      "Worker-mode PGlite requires pgliteProvider.moduleSpecifier. Custom callback-only providers are supported with useWorker: false.",
-    );
-  }
-  return {
-    moduleSpecifier: provider.moduleSpecifier,
-    extensionSpecifiers: provider.extensionSpecifiers,
+  const descriptor: OminipgProviderDescriptor = {
+    ...(provider.moduleSpecifier
+      ? { moduleSpecifier: provider.moduleSpecifier }
+      : {}),
+    ...(provider.extensionSpecifiers
+      ? { extensionSpecifiers: provider.extensionSpecifiers }
+      : {}),
   };
+  return Object.keys(descriptor).length > 0 ? descriptor : undefined;
 }
 
-function toWorkerPgProvider(provider: PgProvider | undefined) {
+function describePgProvider(
+  provider: OminipgConnectionOptions["pgProvider"],
+): OminipgProviderDescriptor | undefined {
   if (!provider) return undefined;
-  if (!provider.moduleSpecifier) {
-    throw new Error(
-      "Worker-mode PostgreSQL requires pgProvider.moduleSpecifier. Custom callback-only providers are supported with useWorker: false.",
-    );
-  }
-  return {
-    moduleSpecifier: provider.moduleSpecifier,
-    logicalReplicationModuleSpecifier:
-      provider.logicalReplicationModuleSpecifier,
+  const descriptor: OminipgProviderDescriptor = {
+    ...(provider.moduleSpecifier
+      ? { moduleSpecifier: provider.moduleSpecifier }
+      : {}),
+    ...(provider.logicalReplicationModuleSpecifier
+      ? {
+        logicalReplicationModuleSpecifier:
+          provider.logicalReplicationModuleSpecifier,
+      }
+      : {}),
   };
-}
-
-function directPgLoadError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  const globals = globalThis as {
-    Deno?: unknown;
-    process?: { versions?: { node?: string } };
-  };
-  const hint = globals.process?.versions?.node
-    ? "Install the optional peer dependency in your app: npm install pg"
-    : globals.Deno
-    ? 'The built-in Deno provider loads "npm:pg@^8.16.3". If you passed a custom provider with bare specifiers, change it to an npm: specifier or add an import-map entry in the consuming app.'
-    : 'Install or map "pg", or pass a custom pgProvider.';
-  return new Error(
-    `Failed to load PostgreSQL provider: ${message}\n\n${hint}`,
-  );
-}
-
-async function createDirectPool(
-  url: string,
-  provider: PgProvider | undefined,
-  max: number,
-): Promise<PgPool> {
-  try {
-    if (provider?.loadPg) {
-      const pg = await provider.loadPg();
-      return new pg.Pool({ connectionString: url, max });
-    }
-    if (provider?.moduleSpecifier) {
-      const pg = await import(provider.moduleSpecifier) as {
-        Pool: new (
-          options: { connectionString: string; max?: number },
-        ) => PgPool;
-      };
-      return new pg.Pool({ connectionString: url, max });
-    }
-  } catch (error) {
-    throw directPgLoadError(error);
-  }
-  throw new Error(
-    "Direct PostgreSQL connections require a pgProvider. Import createPgProvider from '@oxian/ominipg/pg' (or 'jsr:@oxian/ominipg/pg' in Deno) and pass it to Ominipg.connect().",
-  );
+  return Object.keys(descriptor).length > 0 ? descriptor : undefined;
 }
 
 /**
@@ -234,7 +117,7 @@ async function createDirectPool(
  * @example
  * ```typescript
  * const schemas = defineSchema({ users: { ... } });
- * const db = await Ominipg.connect({ url: ":memory:", schemas });
+ * const db = await Ominipg.connect({ url: ":memory:", pgliteProvider, schemas });
  * // db is now OminipgWithCrud<typeof schemas>
  * await db.crud.users.create({ id: "1", name: "Alice" });
  * ```
@@ -246,12 +129,12 @@ export type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
 /**
  * Main Ominipg database client class.
  *
- * Provides a unified interface for working with PostgreSQL databases in Deno,
- * supporting multiple connection modes:
+ * Provides a unified interface for working with PostgreSQL databases across
+ * standards-compatible JavaScript runtimes:
  * - **In-memory**: Using PGlite (PostgreSQL in WASM)
  * - **Persistent**: File-based PGlite storage
- * - **Direct**: Direct connection to PostgreSQL server
- * - **Worker**: Database operations in isolated Web Worker
+ * - **Embedded**: An in-process Oxian WorkerHost in the current isolate
+ * - **Routed**: A shared WorkerHost or Hypervisor-backed Oxian dispatcher
  *
  * The class extends TypedEmitter to provide event-based notifications for
  * connection, sync, and error events.
@@ -259,7 +142,7 @@ export type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
  * @example
  * ```typescript
  * // Basic usage
- * const db = await Ominipg.connect({ url: ":memory:" });
+ * const db = await Ominipg.connect({ url: ":memory:", pgliteProvider });
  * await db.query("SELECT 1");
  * await db.close();
  * ```
@@ -269,31 +152,22 @@ export type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
  * // With sync
  * const db = await Ominipg.connect({
  *   url: ":memory:",
- *   syncUrl: "postgresql://user:pass@host:5432/db"
+ *   syncUrl: "postgresql://user:pass@host:5432/db",
+ *   pgliteProvider,
+ *   pgProvider,
  * });
  * await db.query("INSERT INTO users ...");
  * await db.sync(); // Push changes to remote
  * ```
  */
 export class Ominipg extends TypedEmitter<OminipgClientEvents> {
-  private readonly mode: "worker" | "direct";
-  private readonly worker?: RuntimeWorker;
-  private readonly requests?: RequestManager;
-  private readonly pool?: PgPool; // pg.Pool when in direct mode
-  private listenerHub?: PgListenerHub;
+  private readonly session: OminipgSessionClient;
   private closed = false;
   public crud?: unknown;
 
-  private constructor(
-    mode: "worker" | "direct",
-    worker?: RuntimeWorker,
-    pool?: PgPool,
-  ) {
+  private constructor(session: OminipgSessionClient) {
     super();
-    this.mode = mode;
-    this.worker = worker;
-    this.requests = worker ? new RequestManager(worker, this) : undefined;
-    this.pool = pool;
+    this.session = session;
   }
 
   /**
@@ -317,7 +191,6 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     }
     const db = await Ominipg.connect({
       ...options,
-      useWorker: options.useWorker ?? false,
     });
     await db.close();
   }
@@ -326,7 +199,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * Connects to a PostgreSQL database and returns an Ominipg instance.
    *
    * This is the main entry point for creating database connections. The method
-   * automatically selects the appropriate connection mode based on the provided options.
+   * creates an embedded Oxian session unless an external dispatcher is supplied.
    *
    * @param options - Connection configuration options
    * @returns Promise resolving to an Ominipg instance (with CRUD API if schemas provided)
@@ -334,23 +207,27 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * @example
    * ```typescript
    * // In-memory database
-   * const db = await Ominipg.connect({ url: ":memory:" });
+   * const db = await Ominipg.connect({ url: ":memory:", pgliteProvider });
    * ```
    *
    * @example
    * ```typescript
    * // With CRUD schemas
    * const schemas = defineSchema({ users: { ... } });
-   * const db = await Ominipg.connect({ url: ":memory:", schemas });
+   * const db = await Ominipg.connect({
+   *   url: ":memory:",
+   *   pgliteProvider,
+   *   schemas,
+   * });
    * // db.crud.users is now available
    * ```
    *
    * @example
    * ```typescript
-   * // Direct PostgreSQL connection
+   * // PostgreSQL connection in an embedded Oxian session
    * const db = await Ominipg.connect({
    *   url: "postgresql://user:pass@host:5432/db",
-   *   useWorker: false
+   *   pgProvider
    * });
    * ```
    */
@@ -364,107 +241,65 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     options: OminipgConnectionOptions & { schemas?: S },
   ): Promise<Ominipg | OminipgWithCrud<S>> {
     const url = options.url || `:memory:`;
-    const isPg = url.startsWith("postgres://") ||
-      url.startsWith("postgresql://");
-    const syncDisabled = !options.syncUrl;
-    const useWorker = options.useWorker ?? !!options.syncUrl;
-    const metricsEnabled = !!options.logMetrics;
     const pgPoolMax = options.pgPoolMax ?? 5;
 
     if (!Number.isSafeInteger(pgPoolMax) || pgPoolMax < 1) {
       throw new Error("pgPoolMax must be a positive integer.");
     }
 
-    if (!useWorker && isPg && syncDisabled) {
-      const before = metricsEnabled ? getRssMb() : null;
-      console.log("Using direct Postgres mode");
-      const pool = await createDirectPool(url, options.pgProvider, pgPoolMax);
-      const client = await pool.connect();
-      try {
-        await client.query("SELECT 1");
-        for (const stmt of options.schemaSQL ?? []) {
-          try {
-            await client.query(stmt);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            console.warn(
-              `Direct mode DDL execution failed (this may be ok):`,
-              message,
-            );
-          }
-        }
-      } finally {
-        client.release();
-      }
-      console.log("Direct Postgres mode connected");
-      if (metricsEnabled) {
-        const after = getRssMb();
-        if (after != null && before != null) {
-          console.log(
-            `Direct Postgres initialized (+${
-              after - before
-            } MB, rss=${after} MB)`,
-          );
-        }
-      }
-      const db = new Ominipg("direct", undefined, pool);
-      const schemas = options.schemas;
-      if (schemas) {
-        db.attachCrud(schemas);
-        db.emit("connected");
-        return db as OminipgWithCrud<S>;
-      }
-      db.emit("connected");
-      return db;
+    const embedded = options.oxian ? undefined : createEmbeddedOminipgSession({
+      pgliteProvider: options.pgliteProvider,
+      pgProvider: options.pgProvider,
+      pgliteConfig: options.pgliteConfig,
+      getRssMb: options.runtime?.getRssMb,
+    });
+    const clientRef: { current?: Ominipg } = {};
+    let session: OminipgSessionClient;
+    try {
+      session = await openOminipgSession(
+        options.oxian ?? embedded!.transport,
+        {
+          onError(error) {
+            clientRef.current?.emit("error", error);
+          },
+          onClose: () => embedded?.close(),
+        },
+      );
+    } catch (error) {
+      await embedded?.close().catch(() => {});
+      throw error;
     }
-
-    const beforeWorker = metricsEnabled ? getRssMb() : null;
-    const worker = useWorker
-      ? await createDatabaseWorker(
-        import.meta.url,
-        "../worker/index.ts",
-        "../worker/index.node.js",
-      )
-      : new InProcessWorker();
-    if (metricsEnabled) {
-      const afterWorker = getRssMb();
-      if (afterWorker != null && beforeWorker != null) {
-        console.log(
-          `Worker created (+${
-            afterWorker - beforeWorker
-          } MB, rss=${afterWorker} MB)`,
-        );
-      }
-    }
-    const db = new Ominipg("worker", worker);
+    const db = new Ominipg(session);
+    clientRef.current = db;
 
     const {
-      schemas: _schemasForWorker,
-      pgPoolMax: _pgPoolMaxForWorker,
-      ...initOptions
+      schemas: _schemas,
+      oxian: _oxian,
+      runtime: _runtime,
+      useWorker: _legacyUseWorker,
+      pgliteProvider: _pgliteProvider,
+      pgProvider: _pgProvider,
+      pgliteConfig,
+      ...wireOptions
     } = options;
-    const initMsg = {
-      type: "init" as const,
-      ...initOptions,
-      pgliteProvider: useWorker
-        ? toWorkerPGliteProvider(options.pgliteProvider)
-        : options.pgliteProvider,
-      pgProvider: useWorker
-        ? toWorkerPgProvider(options.pgProvider)
-        : options.pgProvider,
+    const pgliteDescriptor = describePGliteProvider(options.pgliteProvider);
+    const pgDescriptor = describePgProvider(options.pgProvider);
+    const initConfig: OminipgSessionInitConfig = {
+      ...wireOptions,
       url,
+      pgPoolMax,
+      // Arbitrary PGlite configuration remains process-local for embedded
+      // sessions. Routed workers receive only values that cross the byte stream.
+      ...(options.oxian && pgliteConfig ? { pgliteConfig } : {}),
+      ...(pgliteDescriptor ? { pgliteProvider: pgliteDescriptor } : {}),
+      ...(pgDescriptor ? { pgProvider: pgDescriptor } : {}),
     };
 
-    await db.requests!.request<InitMsg>(initMsg, 60000);
-    if (metricsEnabled) {
-      const afterInit = getRssMb();
-      if (afterInit != null && beforeWorker != null) {
-        console.log(
-          `Worker init complete (+${
-            afterInit - beforeWorker
-          } MB, rss=${afterInit} MB)`,
-        );
-      }
+    try {
+      await session.request<void>("initialize", initConfig, 60_000);
+    } catch (error) {
+      await session.close().catch(() => {});
+      throw error;
     }
     const schemas = options.schemas;
     if (schemas) {
@@ -513,17 +348,11 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   public async query<
     TRow extends Record<string, unknown> = Record<string, unknown>,
   >(sql: string, params?: unknown[]): Promise<{ rows: TRow[] }> {
-    if (this.mode === "direct") {
-      const client = await this.pool!.connect();
-      try {
-        const result = await client.query(sql, params ?? []);
-        return { rows: result.rows as unknown as TRow[] };
-      } finally {
-        client.release();
-      }
-    }
-    const message: Omit<ExecMsg, "reqId"> = { type: "exec", sql, params };
-    return await this.requests!.request<{ rows: TRow[] }>(message);
+    if (this.closed) throw new Error("Ominipg instance is closed.");
+    return await this.session.request<{ rows: TRow[] }>("query", {
+      sql,
+      params,
+    });
   }
 
   /**
@@ -543,7 +372,30 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   }
 
   /**
-   * Subscribes to a PostgreSQL notification channel in direct PostgreSQL mode.
+   * Runs a callback in a transaction pinned to this workload session.
+   * Queries are serialized on the same PGlite engine or PostgreSQL connection.
+   */
+  public async transaction<T>(
+    callback: (transaction: Ominipg) => T | Promise<T>,
+  ): Promise<T> {
+    if (this.closed) throw new Error("Ominipg instance is closed.");
+    await this.query("BEGIN");
+    try {
+      const result = await callback(this);
+      await this.query("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        await this.query("ROLLBACK");
+      } catch {
+        // Preserve the callback/commit failure as the primary error.
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Subscribes to a PostgreSQL notification channel through the workload session.
    *
    * All subscriptions on this Ominipg instance share one pinned connection.
    * The listener reconnects with capped backoff and reissues active LISTENs.
@@ -552,29 +404,16 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     channel: string,
     handler: (notification: PgNotification) => void,
   ): Promise<PgSubscription> {
-    if (this.mode !== "direct" || !this.pool) {
-      throw new Error(
-        "Ominipg listen() is supported only in direct PostgreSQL mode (useWorker: false).",
-      );
-    }
     if (this.closed) throw new Error("Ominipg instance is closed.");
-    this.listenerHub ??= new PgListenerHub(
-      this.pool,
-      (error) => this.emit("error", error),
-    );
-    return await this.listenerHub.listen(channel, handler);
+    validateNotificationChannel(channel);
+    return await this.session.listen(channel, handler);
   }
 
   /** Sends a PostgreSQL notification using parameterized `pg_notify`. */
   public async notify(channel: string, payload = ""): Promise<void> {
-    if (this.mode !== "direct") {
-      throw new Error(
-        "Ominipg notify() is supported only in direct PostgreSQL mode (useWorker: false).",
-      );
-    }
     if (this.closed) throw new Error("Ominipg instance is closed.");
     validateNotificationChannel(channel);
-    await this.query("SELECT pg_notify($1, $2)", [channel, payload]);
+    await this.session.request("notify", { channel, payload });
   }
 
   /**
@@ -583,11 +422,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * This method synchronizes INSERT, UPDATE, and DELETE operations from the local
    * database (PGlite) to the remote PostgreSQL database specified in `syncUrl`.
    *
-   * **Note:** Sync is only available in worker mode with a `syncUrl` configured.
-   * Direct PostgreSQL connections do not support sync.
+   * **Note:** Sync requires a `syncUrl` configured on the workload engine.
    *
    * @returns Promise resolving to sync result with count of pushed changes
-   * @throws Error if called in direct mode or without syncUrl configured
+   * @throws Error if called without syncUrl configured
    *
    * @example
    * ```typescript
@@ -605,13 +443,11 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * ```
    */
   public async sync(): Promise<{ pushed: number }> {
-    if (this.mode === "direct") {
-      throw new Error("Sync is disabled in direct Postgres mode");
-    }
+    if (this.closed) throw new Error("Ominipg instance is closed.");
     this.emit("sync:start");
-    const message: Omit<SyncMsg, "reqId"> = { type: "sync" };
-    const result = await this.requests!.request<{ pushed: number }>(
-      message,
+    const result = await this.session.request<{ pushed: number }>(
+      "sync",
+      undefined,
       120000,
     );
     this.emit("sync:end", result);
@@ -624,10 +460,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * This ensures that auto-increment sequences (SERIAL columns) in the local
    * database are synchronized with the remote database to prevent ID conflicts.
    *
-   * **Note:** Only available in worker mode with sync enabled.
+   * **Note:** Only available with sync enabled.
    *
    * @returns Promise resolving to sync result with count of synced sequences
-   * @throws Error if called in direct mode or without syncUrl configured
+   * @throws Error if called without syncUrl configured
    *
    * @example
    * ```typescript
@@ -642,11 +478,12 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * ```
    */
   public async syncSequences(): Promise<{ synced: number }> {
-    if (this.mode === "direct") {
-      throw new Error("Sync sequences is disabled in direct Postgres mode");
-    }
-    const message: Omit<SyncSeqMsg, "reqId"> = { type: "sync-sequences" };
-    return await this.requests!.request<{ synced: number }>(message, 120000);
+    if (this.closed) throw new Error("Ominipg instance is closed.");
+    return await this.session.request<{ synced: number }>(
+      "sync-sequences",
+      undefined,
+      120000,
+    );
   }
 
   /**
@@ -656,21 +493,16 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * database in a later process. This is only available for PGlite connections.
    */
   public async dumpDataDir(): Promise<Blob> {
-    if (this.mode === "direct") {
-      throw new Error(
-        "dumpDataDir() is only available for PGlite connections.",
-      );
-    }
-    const message: Omit<DumpDataDirMsg, "reqId"> = { type: "dump-data-dir" };
-    const { dataDirBytes, dataDirType } = await this.requests!.request<{
+    if (this.closed) throw new Error("Ominipg instance is closed.");
+    const { dataDirBytes, dataDirType } = await this.session.request<{
       dataDirBytes: Uint8Array;
       dataDirType?: string;
-    }>(message, 120000);
-    const bytes = new Uint8Array(dataDirBytes);
-    const buffer = bytes.buffer.slice(
-      bytes.byteOffset,
-      bytes.byteOffset + bytes.byteLength,
-    ) as ArrayBuffer;
+    }>("dump-data-dir", undefined, 120000);
+    const bytes = dataDirBytes;
+    const buffer = bytes.buffer instanceof ArrayBuffer &&
+        bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? bytes.buffer
+      : bytes.slice().buffer as ArrayBuffer;
     return new Blob([buffer], { type: dataDirType });
   }
 
@@ -690,31 +522,26 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * ```
    */
   public async getDiagnosticInfo(): Promise<Record<string, unknown>> {
-    if (this.mode === "direct") {
-      return {
-        mainDatabase: { type: "postgres" },
-        syncDatabase: { hasSyncPool: false },
-      };
-    }
-    const message: Omit<DiagnosticMsg, "reqId"> = { type: "diagnostic" };
-    const { info } = await this.requests!.request<
+    if (this.closed) throw new Error("Ominipg instance is closed.");
+    const { info } = await this.session.request<
       { info: Record<string, unknown> }
-    >(message);
+    >("diagnostics");
     return info;
   }
 
   /**
    * Closes the database connection and cleans up resources.
    *
-   * In worker mode, this terminates the worker thread. In direct mode,
-   * this closes the PostgreSQL connection pool. Always call this method
+   * This closes the workload session and its database resources. A private
+   * embedded host is also shut down; an injected shared host remains owned by
+   * its application. Always call this method
    * when done with the database to free resources.
    *
    * @returns Promise that resolves when cleanup is complete
    *
    * @example
    * ```typescript
-   * const db = await Ominipg.connect({ url: ":memory:" });
+   * const db = await Ominipg.connect({ url: ":memory:", pgliteProvider });
    * // ... use database ...
    * await db.close();
    * ```
@@ -722,15 +549,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   public async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    if (this.mode === "direct") {
-      await this.listenerHub?.close();
-      await this.pool?.end();
-      this.emit("close");
-      return;
-    }
-    const message: Omit<CloseMsg, "reqId"> = { type: "close" };
-    await this.requests!.request<void>(message);
-    await this.worker!.terminate();
+    await this.session.close();
     this.emit("close");
   }
 
@@ -779,6 +598,10 @@ export type OminipgDrizzleMixin = {
     sql: string,
     params?: unknown[],
   ) => Promise<{ rows: TRow[] }>;
+  /** Run a callback in one workload-scoped transaction. */
+  transaction: <T>(
+    callback: (transaction: Ominipg) => T | Promise<T>,
+  ) => Promise<T>;
   /** Access to the underlying Ominipg instance */
   _ominipg: Ominipg;
 };
@@ -792,6 +615,16 @@ export type {
   PgSubscription,
   PgSubscriptionState,
 } from "./types.ts";
+export {
+  createOminipgWorkload,
+  OMINIPG_SESSION_PROTOCOL,
+  OMINIPG_SESSION_WORKLOAD,
+} from "../session/index.ts";
+export type {
+  OminipgDispatcher,
+  OminipgSessionTransport,
+  OminipgWorkloadOptions,
+} from "../session/index.ts";
 
 /**
  * Creates a Drizzle ORM adapter for an Ominipg instance.
@@ -949,6 +782,7 @@ function createDrizzleAdapter<
 
     // Raw query access
     queryRaw: ominipgInstance.query.bind(ominipgInstance),
+    transaction: ominipgInstance.transaction.bind(ominipgInstance),
 
     // Access to the underlying Ominipg instance
     _ominipg: ominipgInstance,

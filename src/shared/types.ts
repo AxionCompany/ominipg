@@ -1,23 +1,9 @@
 /**
  * @module
  *
- * Shared message and configuration types used by the Ominipg worker pipeline.
- * These definitions describe the structured payloads exchanged between the
- * main thread and the worker responsible for executing database operations.
+ * Database provider and engine configuration contracts shared by the Ominipg
+ * client, session protocol, and workload engine.
  */
-
-/**
- * Union describing every message that can be sent from the main thread to the
- * worker. Each variant represents a discrete command or control signal.
- */
-export type WorkerMsg =
-  | InitMsg
-  | ExecMsg
-  | SyncMsg
-  | SyncSeqMsg
-  | DumpDataDirMsg
-  | DiagnosticMsg
-  | CloseMsg;
 
 /**
  * Extended configuration passed to the embedded PGlite engine.
@@ -48,11 +34,12 @@ export interface PGliteInstance {
 }
 
 export interface PGliteConstructor {
-  new (...args: any[]): PGliteInstance;
+  new (dataDir?: string, options?: PGliteOptions): PGliteInstance;
+  new (options?: PGliteOptions): PGliteInstance;
 }
 
 export interface PGliteModule {
-  PGlite: PGliteConstructor;
+  PGlite: unknown;
 }
 
 export interface PGliteProvider {
@@ -96,7 +83,7 @@ export interface PgModule {
 }
 
 export interface LogicalReplicationServiceLike {
-  on(event: string, listener: (...args: any[]) => void): void;
+  on(event: string, listener: (...args: unknown[]) => void): void;
   subscribe(plugin: unknown, slotName: string): Promise<unknown>;
   stop(): Promise<unknown>;
 }
@@ -119,38 +106,10 @@ export interface PgProvider {
 }
 
 /**
- * Responses emitted by the worker back to the main thread.
- *
- * Each message corresponds to the completion (or failure) of a previously
- * issued worker request.
+ * Serializable database initialization configuration applied by one workload
+ * session.
  */
-export type ResponseMsg =
-  | { type: "init-ok"; reqId: number }
-  | { type: "exec-ok"; reqId: number; rows: unknown[] }
-  | { type: "sync-ok"; reqId: number; pushed: number }
-  | { type: "sync-sequences-ok"; reqId: number; synced: number }
-  | {
-    type: "dump-data-dir-ok";
-    reqId: number;
-    dataDirBytes: Uint8Array;
-    dataDirType?: string;
-  }
-  | { type: "close-ok"; reqId: number }
-  | {
-    type: "diagnostic-ok";
-    reqId: number;
-    info: Record<string, unknown>;
-  }
-  | { type: "error"; reqId?: number; error: string };
-
-/*───────────────── Message Types ──────────────────*/
-
-/**
- * Initialization payload sent to the worker when it starts.
- */
-export interface InitMsg {
-  type: "init";
-  reqId: number;
+export interface OminipgEngineConfig {
   url: string;
   syncUrl?: string;
   schemaSQL?: string[];
@@ -170,55 +129,6 @@ export interface InitMsg {
   pgliteMemoryProfile?: "default" | "low-memory";
   pgliteProvider?: PGliteProvider;
   pgProvider?: PgProvider;
+  pgPoolMax?: number;
   logMetrics?: boolean;
 }
-
-/**
- * Executes a SQL statement inside the worker context.
- */
-export type ExecMsg = {
-  type: "exec";
-  reqId: number;
-  sql: string;
-  params?: unknown[];
-};
-
-/**
- * Triggers a sync cycle that pushes tracked mutations to the remote database.
- */
-export type SyncMsg = {
-  type: "sync";
-  reqId: number;
-};
-
-/**
- * Instructs the worker to resynchronize sequence values.
- */
-export type SyncSeqMsg = {
-  type: "sync-sequences";
-  reqId: number;
-};
-
-/**
- * Requests a PGlite data directory snapshot from the active connection.
- */
-export type DumpDataDirMsg = {
-  type: "dump-data-dir";
-  reqId: number;
-};
-
-/**
- * Requests diagnostic information from the worker.
- */
-export type DiagnosticMsg = {
-  type: "diagnostic";
-  reqId: number;
-};
-
-/**
- * Signals the worker to perform cleanup and shut down.
- */
-export type CloseMsg = {
-  type: "close";
-  reqId: number;
-};

@@ -4,26 +4,43 @@ import { join } from "jsr:@std/path@1.1.2";
 const repoRoot = join(import.meta.dirname!, "..");
 
 Deno.test({
-  name: "packed package preserves read-only schema inference for consumers",
+  name: "packed npm package preserves read-only schema inference for consumers",
   sanitizeExit: false,
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
     const tempDir = await Deno.makeTempDir({ prefix: "ominipg-packed-types-" });
     try {
-      const archive = join(tempDir, "ominipg.tgz");
       const denoDir = join(tempDir, "deno-cache");
+      const packageDir = join(tempDir, "npm-package");
       await run(
         [
           Deno.execPath(),
-          "pack",
-          "--allow-dirty",
-          "--output",
-          archive,
+          "run",
+          "-A",
+          "scripts/build_npm.ts",
         ],
         repoRoot,
-        { DENO_DIR: denoDir },
+        {
+          OMINIPG_NPM_OUT_DIR: packageDir,
+        },
       );
+
+      const packOutput = await run(
+        [
+          "npm",
+          "pack",
+          packageDir,
+          "--pack-destination",
+          tempDir,
+          "--ignore-scripts",
+          "--json",
+        ],
+        tempDir,
+        { npm_config_cache: join(tempDir, "npm-cache") },
+      );
+      const [{ filename }] = JSON.parse(packOutput) as [{ filename: string }];
+      const archive = join(tempDir, filename);
 
       await Deno.writeTextFile(
         join(tempDir, "package.json"),
@@ -38,7 +55,7 @@ Deno.test({
       );
       await Deno.writeTextFile(
         join(tempDir, "main.ts"),
-        `import { defineSchema } from "npm:@oxian/ominipg";
+        `import { defineSchema } from "@oxian/ominipg";
 
 const schema = defineSchema({
   rows: {
@@ -100,7 +117,7 @@ async function run(
   command: string[],
   cwd: string,
   env?: Record<string, string>,
-): Promise<void> {
+): Promise<string> {
   const result = await new Deno.Command(command[0], {
     args: command.slice(1),
     cwd,
@@ -115,4 +132,5 @@ async function run(
       new TextDecoder().decode(result.stderr)
     }`,
   );
+  return new TextDecoder().decode(result.stdout);
 }

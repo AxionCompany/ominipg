@@ -11,10 +11,9 @@ if (!pgUrl) {
     fn: () => {},
   });
 } else {
-  Deno.test("PostgreSQL notifications deliver through a real direct connection", async () => {
+  Deno.test("PostgreSQL notifications deliver through a real workload session", async () => {
     const db = await Ominipg.connect({
       url: pgUrl,
-      useWorker: false,
       pgProvider: createPgProvider(),
       pgPoolMax: 3,
     });

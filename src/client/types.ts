@@ -8,6 +8,7 @@
  */
 
 import type { CrudSchemas } from "./crud/types.ts";
+import type { OminipgSessionTransport } from "../session/client.ts";
 import type {
   PGliteConfig,
   PGliteProvider,
@@ -98,7 +99,7 @@ export interface OminipgConnectionOptions {
   pgliteExtensions?: string[];
 
   /**
-   * Additional configuration forwarded to the embedded PGlite engine.
+   * Additional configuration forwarded to the PGlite engine.
    * Useful for tuning WASM memory, cache sizing, or providing a precompiled binary.
    */
   pgliteConfig?: PGliteConfig;
@@ -125,7 +126,7 @@ export interface OminipgConnectionOptions {
   pgProvider?: PgProvider;
 
   /**
-   * Maximum number of connections in the direct PostgreSQL pool.
+   * Maximum number of connections in the workload's PostgreSQL pool.
    *
    * Defaults to 5. Notification listeners pin one connection for the lifetime
    * of the listener hub, so configure at least 2 when using `listen()`.
@@ -133,15 +134,26 @@ export interface OminipgConnectionOptions {
   pgPoolMax?: number;
 
   /**
-   * Force use of a Web Worker even when only a Postgres URL is provided.
-   * Defaults to true. Set to false to enable direct Postgres mode (no Worker, no PGlite).
+   * Existing Oxian dispatcher used for a shared in-process host or a routed
+   * Hypervisor connection. When omitted, Ominipg creates a private embedded
+   * WorkerHost in the current JavaScript isolate.
+   */
+  oxian?: OminipgSessionTransport;
+
+  /** Optional host capabilities; the core never probes runtime globals. */
+  runtime?: Readonly<{
+    getRssMb?: () => number | null;
+  }>;
+
+  /**
+   * @deprecated Ominipg is always Oxian-native. This option is accepted as a
+   * no-op during migration; choose embedded or routed execution with `oxian`.
    */
   useWorker?: boolean;
 
   /**
-   * If true, the worker will log lightweight runtime metrics during initialization
-   * (e.g., RSS memory in MB on Linux) to help diagnose startup memory usage.
-   * This is a no-op on platforms without /proc.
+   * If true, the workload logs lightweight initialization metrics when its host
+   * supplied `runtime.getRssMb`. It is a no-op without that capability.
    */
   logMetrics?: boolean;
 

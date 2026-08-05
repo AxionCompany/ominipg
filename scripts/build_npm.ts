@@ -1,4 +1,4 @@
-import { build, emptyDir } from "jsr:@deno/dnt@0.42.3";
+import { build, emptyDir } from "@deno/dnt";
 
 const denoJson = JSON.parse(await Deno.readTextFile("./deno.json")) as {
   name?: string;
@@ -8,7 +8,7 @@ const denoJson = JSON.parse(await Deno.readTextFile("./deno.json")) as {
   repository?: { type?: string; url?: string };
 };
 
-const outDir = "./npm";
+const outDir = Deno.env.get("OMINIPG_NPM_OUT_DIR") ?? "./npm";
 const version = Deno.args[0]?.replace(/^v/, "") || denoJson.version ||
   "0.0.0";
 const repository = denoJson.repository?.type && denoJson.repository.url
@@ -27,7 +27,9 @@ await build({
     { name: "./crud", path: "./src/client/crud/index.ts" },
     { name: "./pglite", path: "./src/providers/pglite.ts" },
     { name: "./pg", path: "./src/providers/pg.ts" },
-    { name: "./worker", path: "./src/worker/index.node.ts" },
+    { name: "./worker", path: "./src/worker/index.ts" },
+    { name: "./workload", path: "./src/session/workload.ts" },
+    { name: "./session", path: "./src/session/index.ts" },
   ],
   outDir,
   scriptModule: false,
@@ -37,7 +39,6 @@ await build({
   test: false,
   shims: {},
   mappings: {
-    "./src/runtime/mod.ts": "./src/runtime/mod.node.ts",
     "./src/auto.ts": "./src/auto.node.ts",
     "./src/providers/pglite.ts": "./src/providers/pglite.node.ts",
     "./src/providers/pg.ts": "./src/providers/pg.node.ts",
@@ -75,6 +76,11 @@ await build({
   async postBuild() {
     await Deno.copyFile("README.md", `${outDir}/README.md`);
     await Deno.copyFile("LICENSE", `${outDir}/LICENSE`);
+    await Deno.mkdir(`${outDir}/assets`, { recursive: true });
+    await Deno.copyFile(
+      "assets/logo_color.png",
+      `${outDir}/assets/logo_color.png`,
+    );
 
     const packageJsonPath = `${outDir}/package.json`;
     const packageJson = JSON.parse(

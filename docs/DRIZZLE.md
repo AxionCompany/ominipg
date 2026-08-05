@@ -30,7 +30,7 @@ Drizzle ORM provides:
 **Ominipg + Drizzle** = Best of both worlds:
 
 - Drizzle's type safety and query builder
-- Ominipg's local-first sync and worker isolation
+- Ominipg's local-first sync and Oxian workload lifecycle
 
 ---
 

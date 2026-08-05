@@ -1,5 +1,8 @@
 # Migration Guide: 0.5.x to 0.6.x
 
+> Historical guide. For the current Oxian-native architecture, continue with
+> [Migrating to Ominipg 0.9](./MIGRATION_0_9.md).
+
 Ominipg 0.6 makes PGlite and PostgreSQL drivers explicit providers. This keeps
 the core package lighter, enables the npm build for Node.js, and avoids loading
 database engines you do not use.

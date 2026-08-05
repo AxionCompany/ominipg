@@ -1,20 +1,48 @@
 import {
+  type EngineState,
   loadLogicalReplicationModule,
-  mainDb,
-  meta,
-  recentlyPushed,
-  syncPool,
+  requireMainDb,
 } from "../db.ts";
 import { createTableFromRemote, ensureMeta } from "../schema.ts";
 import { ident } from "../utils.ts";
-import { EDGE_ID, LWW_COL } from "../bootstrap.ts";
-import type { InitMsg } from "../../shared/types.ts";
-import type { LogicalReplicationServiceLike } from "../../shared/types.ts";
+import type { OminipgEngineConfig } from "../../shared/types.ts";
 
-let repl: LogicalReplicationServiceLike | null = null;
+type WalLog = Readonly<{
+  origin?: unknown;
+  relation: Readonly<{ name: string }>;
+  tag: string;
+  old?: Record<string, unknown> | null;
+  new?: Record<string, unknown> | null;
+}>;
 
-async function localUpsert(table: string, row: Record<string, unknown>) {
-  const m = meta.get(table)!;
+function isWalLog(value: unknown): value is WalLog {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.tag === "string" && !!record.relation &&
+    typeof record.relation === "object" &&
+    typeof (record.relation as Record<string, unknown>).name === "string";
+}
+
+function isLessThanOrEqual(left: unknown, right: unknown): boolean {
+  if (typeof left === "number" && typeof right === "number") {
+    return left <= right;
+  }
+  if (typeof left === "string" && typeof right === "string") {
+    return left <= right;
+  }
+  if (left instanceof Date && right instanceof Date) {
+    return left.getTime() <= right.getTime();
+  }
+  return String(left) <= String(right);
+}
+
+async function localUpsert(
+  state: EngineState,
+  table: string,
+  row: Record<string, unknown>,
+) {
+  const mainDb = requireMainDb(state);
+  const m = state.meta.get(table)!;
 
   // Use a transaction to ensure the session variable is set only for this operation
   await mainDb.exec("BEGIN");
@@ -32,7 +60,9 @@ async function localUpsert(table: string, row: Record<string, unknown>) {
           SELECT * FROM json_populate_record(null::${ident(table)}, $1) s
           ON CONFLICT (${pkList}) DO UPDATE
             SET ${updSet}
-          WHERE ${ident(table)}.${ident(LWW_COL)} < EXCLUDED.${ident(LWW_COL)}
+          WHERE ${ident(table)}.${ident(state.lwwColumn)} < EXCLUDED.${
+        ident(state.lwwColumn)
+      }
         `,
       [JSON.stringify(row)],
     );
@@ -44,8 +74,13 @@ async function localUpsert(table: string, row: Record<string, unknown>) {
   }
 }
 
-async function localDelete(table: string, pk: Record<string, unknown>) {
-  const m = meta.get(table)!;
+async function localDelete(
+  state: EngineState,
+  table: string,
+  pk: Record<string, unknown>,
+) {
+  const mainDb = requireMainDb(state);
+  const m = state.meta.get(table)!;
 
   // Use a transaction to ensure the session variable is set only for this operation
   await mainDb.exec("BEGIN");
@@ -69,8 +104,8 @@ async function localDelete(table: string, pk: Record<string, unknown>) {
   }
 }
 
-async function handleWalMessage(log: any) {
-  if (log.origin === EDGE_ID) return; // Skip echo from our own origin
+async function handleWalMessage(state: EngineState, log: WalLog) {
+  if (log.origin === state.edgeId) return; // Skip echo from our own origin
 
   const tableName = log.relation.name;
   const isDelete = log.tag === "delete";
@@ -84,24 +119,24 @@ async function handleWalMessage(log: any) {
     return;
   }
 
-  await ensureMeta(tableName);
-  const m = meta.get(tableName)!;
+  await ensureMeta(state, tableName);
+  const m = state.meta.get(tableName)!;
 
   const pkValues = m.pk.map((col) => String(rowData[col] || "")).join("|");
-  const pushedInfo = recentlyPushed.get(tableName)?.get(pkValues);
+  const pushedInfo = state.recentlyPushed.get(tableName)?.get(pkValues);
 
   if (pushedInfo) {
-    const incomingLww = rowData[LWW_COL];
+    const incomingLww = rowData[state.lwwColumn];
     // It's an echo if the operation is the same AND the LWW value is the same or older.
     // For deletes, the LWW value is not applicable.
     if (
       pushedInfo.op === log.tag.charAt(0).toUpperCase() &&
       (pushedInfo.op === "D" ||
-        (pushedInfo.lww && incomingLww <= pushedInfo.lww))
+        (pushedInfo.lww && isLessThanOrEqual(incomingLww, pushedInfo.lww)))
     ) {
-      recentlyPushed.get(tableName)!.delete(pkValues); // Consume the echo
-      if (recentlyPushed.get(tableName)!.size === 0) {
-        recentlyPushed.delete(tableName);
+      state.recentlyPushed.get(tableName)!.delete(pkValues); // Consume the echo
+      if (state.recentlyPushed.get(tableName)!.size === 0) {
+        state.recentlyPushed.delete(tableName);
       }
       return;
     }
@@ -109,17 +144,17 @@ async function handleWalMessage(log: any) {
 
   try {
     if (isDelete) {
-      await localDelete(tableName, rowData);
+      await localDelete(state, tableName, rowData);
     } else {
-      await localUpsert(tableName, rowData);
+      await localUpsert(state, tableName, rowData);
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (msg.includes("does not exist")) {
-      if (syncPool) {
-        const client = await syncPool.connect();
+      if (state.syncPool) {
+        const client = await state.syncPool.connect();
         try {
-          await createTableFromRemote(client, tableName);
+          await createTableFromRemote(state, client, tableName);
         } finally {
           client.release();
         }
@@ -132,9 +167,9 @@ async function handleWalMessage(log: any) {
 
       // Retry the operation after creating the table
       if (isDelete) {
-        await localDelete(tableName, rowData);
+        await localDelete(state, tableName, rowData);
       } else {
-        await localUpsert(tableName, rowData);
+        await localUpsert(state, tableName, rowData);
       }
     } else {
       throw error;
@@ -142,11 +177,15 @@ async function handleWalMessage(log: any) {
   }
 }
 
-export async function startPuller(cfg: InitMsg) {
+export async function startPuller(
+  state: EngineState,
+  cfg: OminipgEngineConfig,
+) {
+  const syncPool = state.syncPool;
   if (!syncPool) return;
 
-  const slot = `edge_${EDGE_ID.replace(/-/g, "")}`;
-  const pubName = `edge_pub_${EDGE_ID.replace(/-/g, "")}`;
+  const slot = `edge_${state.edgeId.replace(/-/g, "")}`;
+  const pubName = `edge_pub_${state.edgeId.replace(/-/g, "")}`;
 
   const client = await syncPool.connect();
   try {
@@ -159,33 +198,14 @@ export async function startPuller(cfg: InitMsg) {
       await client.query(`CREATE PUBLICATION ${ident(pubName)} FOR ALL TABLES`);
     }
 
-    // 2. Ensure replication slot exists, cleaning up old ones if necessary.
+    // 2. Ensure this edge's replication slot exists. Retired slot cleanup is an
+    // operator concern: deleting every inactive `edge_%` slot here can destroy
+    // another embedded session's durable replication position.
     const slotExistsResult = await client.query(
       `SELECT 1 FROM pg_replication_slots WHERE slot_name = $1`,
       [slot],
     );
     if (slotExistsResult.rows.length === 0) {
-      // Slot doesn't exist, let's try to clean up old inactive slots from our app
-      const oldSlotsResult = await client.query(`
-                SELECT slot_name FROM pg_replication_slots 
-                WHERE plugin = 'pgoutput' AND active = 'false' AND slot_name LIKE 'edge_%'
-            `);
-      for (
-        const oldSlot of oldSlotsResult.rows as Array<{ slot_name: string }>
-      ) {
-        try {
-          await client.query(`SELECT pg_drop_replication_slot($1)`, [
-            oldSlot.slot_name,
-          ]);
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e);
-          console.error(
-            `Could not drop old slot ${oldSlot.slot_name}:`,
-            message,
-          );
-        }
-      }
-      // Now, try to create the new slot
       await client.query(
         `SELECT pg_create_logical_replication_slot($1, 'pgoutput')`,
         [slot],
@@ -194,7 +214,6 @@ export async function startPuller(cfg: InitMsg) {
   } catch (err) {
     console.error("Failed to ensure publication/slot:", err);
     // Don't continue if we can't set up the slot
-    client.release();
     throw err;
   } finally {
     client.release();
@@ -203,25 +222,31 @@ export async function startPuller(cfg: InitMsg) {
   const connectionString = cfg.syncUrl || syncPool?.options?.connectionString ||
     "";
   const { LogicalReplicationService, PgoutputPlugin } =
-    await loadLogicalReplicationModule();
-  repl = new LogicalReplicationService({ connectionString });
+    await loadLogicalReplicationModule(state);
+  state.replicationService = new LogicalReplicationService({
+    connectionString,
+  });
 
   // --- FIX: Run subscription as a background process ---
 
   // Wrap the subscription in a promise that resolves when replication starts
   const started = new Promise<void>((resolve, reject) => {
-    repl!.on("start", () => {
+    state.replicationService!.on("start", () => {
       resolve();
     });
-    repl!.on("error", (err) => {
+    state.replicationService!.on("error", (err) => {
       console.error("Replication error, will not start:", err);
       reject(err);
     });
   });
 
-  repl.on("data", (lsn: string, log: any) => {
+  state.replicationService.on("data", (...args: unknown[]) => {
+    const log = args[1];
+    if (!isWalLog(log)) return;
     if (log.tag === "insert" || log.tag === "update" || log.tag === "delete") {
-      handleWalMessage(log).catch((err) => console.error("WAL Error:", err));
+      handleWalMessage(state, log).catch((err) =>
+        console.error("WAL Error:", err)
+      );
     }
   });
 
@@ -231,7 +256,7 @@ export async function startPuller(cfg: InitMsg) {
   });
 
   // Start the subscription but don't await its completion here
-  repl.subscribe(plugin, slot).catch((err) => {
+  state.replicationService.subscribe(plugin, slot).catch((err) => {
     console.error("Replication subscription failed:", err);
   });
 
@@ -239,7 +264,7 @@ export async function startPuller(cfg: InitMsg) {
   await started;
 }
 
-export async function stopPuller() {
-  await repl?.stop();
-  repl = null;
+export async function stopPuller(state: EngineState) {
+  await state.replicationService?.stop();
+  state.replicationService = null;
 }

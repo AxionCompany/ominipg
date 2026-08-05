@@ -1,3 +1,4 @@
 /test/test.db
 /npm
+/node_modules
 .env

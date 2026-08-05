@@ -22,9 +22,9 @@ import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 import { createCrudApi, defineSchema } from "jsr:@oxian/ominipg/crud";
 ```
 
-### Node.js
+### Node.js and Bun
 
-Node.js support requires Node 22+ and uses the ESM-only npm package.
+Node.js support requires Node 22+. Node and Bun use the ESM-only npm package.
 
 ```bash
 npm install @oxian/ominipg
@@ -95,6 +95,22 @@ const db = await Ominipg.connect({
   },
 });
 ```
+
+Every connection uses a private embedded Oxian host by default. To use an
+application-owned shared host or Hypervisor:
+
+```ts
+const db = await Ominipg.connect({
+  url: ":memory:",
+  oxian: {
+    dispatcher: host,
+    metadata: { tenantId },
+  },
+});
+```
+
+Attach `createOminipgWorkload()` to that dispatcher and configure its database
+providers. See [Oxian embedding and routing](./OXIAN.md).
 
 ---
 
@@ -418,6 +434,16 @@ db.on("sync:end", (result) => console.log("Sync completed"));
 db.on("close", () => console.log("Closed"));
 ```
 
+### PostgreSQL notifications
+
+```ts
+const subscription = await db.listen("jobs_ready", (notification) => {
+  console.log(notification.payload);
+});
+await db.notify("jobs_ready", "job-id");
+await subscription.close();
+```
+
 ---
 
 ## Cleanup
@@ -488,18 +514,13 @@ const active = await db.crud.users.find({
 });
 ```
 
-### Transactions (Raw SQL)
+### Transactions
 
 ```typescript
-await db.query("BEGIN");
-try {
-  await db.query("INSERT INTO users ...");
-  await db.query("INSERT INTO profiles ...");
-  await db.query("COMMIT");
-} catch (error) {
-  await db.query("ROLLBACK");
-  throw error;
-}
+await db.transaction(async (tx) => {
+  await tx.query("INSERT INTO users ...");
+  await tx.query("INSERT INTO profiles ...");
+});
 ```
 
 ---
@@ -524,7 +545,10 @@ type UserKey = typeof schemas.users.$inferKey;
 ## See Also
 
 - [Full API Reference](./API.md)
-- [0.6 Migration Guide](./MIGRATION_0_6.md)
+- [Architecture](./ARCHITECTURE.md)
+- [Oxian embedding and routing](./OXIAN.md)
+- [Runtime support](./RUNTIMES.md)
+- [0.9 Migration Guide](./MIGRATION_0_9.md)
 - [CRUD Guide](./CRUD.md)
 - [Drizzle Integration](./DRIZZLE.md)
 - [Sync Guide](./SYNC.md)

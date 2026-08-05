@@ -1,9 +1,12 @@
 # PGlite Memory Characteristics
 
-This note summarizes our recent measurements of the WebAssembly build of
-PostgreSQL that ships with `@electric-sql/pglite`. The goal is to help decide
-when the in-process PGlite runtime is a good fit and when a native PostgreSQL
-server (or another driver) is more appropriate.
+This note summarizes measurements of the WebAssembly build of PostgreSQL that
+ships with `@electric-sql/pglite`. The goal is to help decide when PGlite is a
+good fit and when a PostgreSQL service (or another engine) is more appropriate.
+
+The worker-isolate rows below are historical measurements from Ominipg before
+0.9. Ominipg 0.9's default Oxian `WorkerHost` is same-isolate and does not
+create the extra Web Worker/`worker_threads` isolate measured there.
 
 ## Memory Profile
 
@@ -13,15 +16,15 @@ scripts under `experiments/memory/`.
 | Scenario                             | Script             | Peak RSS delta                                   | Notes                                                                               |
 | ------------------------------------ | ------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------- |
 | Baseline Deno runtime                | `baseline.ts`      | ~45 MB                                           | No database loaded; establishes the minimum process footprint.                      |
-| Worker created (no DB)               | `worker_spawn.ts`  | ~60 MB                                           | Worker isolate alone adds ~15 MB over baseline.                                     |
+| Legacy Web Worker created (no DB)    | `worker_spawn.ts`  | ~60 MB                                           | Pre-0.9 isolate alone added ~15 MB over baseline.                                   |
 | PGlite in-process (memory://)        | `pglite_direct.ts` | ~460 MB                                          | WASM heap expands to ~188 MB; RSS remains high after `close()`.                     |
-| Ominipg worker + PGlite              | `worker_pglite.ts` | 316 MB during `connect`, ~700 MB after `close()` | Host process + worker each retain their WASM heaps until GC reclaims the buffers.   |
+| Legacy Ominipg worker + PGlite       | `worker_pglite.ts` | 316 MB during `connect`, ~700 MB after `close()` | Pre-0.9 host + worker isolate behavior; not the current embedded topology.          |
 | PGlite with NodeFS backing store     | `pglite_nodefs.ts` | ~530 MB                                          | Switching from in-memory FS to `file://` does **not** reduce the initial footprint. |
 | node-postgres Pool (native Postgres) | `pg_pool.ts`       | ~52 MB                                           | Demonstrates the overhead of using the NPM `pg` client without PGlite.              |
 
-The numbers show that even a single PGlite instance costs roughly 400–500 MB of
-RSS. Every additional worker incurs the same cost because each isolate loads its
-own copy of the WASM module and filesystem bundle.
+The numbers show that even a single PGlite instance can cost hundreds of
+megabytes of RSS. Every additional PGlite engine still adds substantial memory;
+a remote worker isolate also loads its own WASM module and filesystem bundle.
 
 ## Why PGlite Uses So Much Memory
 
@@ -76,16 +79,16 @@ embedded PostgreSQL outweighs the memory cost:
   offers a single backend per instance and serializes work through the host
   event loop.
 - **Production backends** – For applications that already run a PostgreSQL
-  cluster, using the direct `pg` driver (`useWorker: false` in Ominipg) keeps
-  RSS near 50 MB and avoids duplicated WASM heaps.
+  cluster, selecting a PostgreSQL URL avoids the PGlite WASM heap. The engine
+  still runs inside an Ominipg workload session.
 
 ## Practical Guidance
 
-- Only opt into worker mode (`useWorker: true`) when you need cross-thread
-  isolation or synchronization features; otherwise prefer direct Postgres
-  connections.
-- If you do use PGlite, reuse a single instance per process whenever possible.
-  Spawning workers per request multiplies the memory cost linearly.
+- Use the default embedded Oxian topology when PGlite can share the
+  application's event loop. Route to another process only when isolation is
+  worth the extra runtime/WASM footprint.
+- Reuse a small number of long-lived Ominipg sessions whenever possible. Each
+  connection owns a separate PGlite engine even when sessions share one host.
 - For the lowest RSS with embedded PGlite, prefer a pre-initialized `file://`
   database plus the low-memory PGlite config helper.
 - Monitor RSS with utilities like `ps -o rss` or `Deno.memoryUsage()` if you run
@@ -133,7 +136,6 @@ const db = await Ominipg.connect({
   schemaSQL: [
     "CREATE TABLE IF NOT EXISTS items(id INT PRIMARY KEY, value TEXT)",
   ],
-  useWorker: false,
 });
 ```
 
@@ -163,8 +165,8 @@ createLowMemoryPGliteConfig({
 
 ## References
 
-- `experiments/memory/` scripts in this repository (baseline, worker, PGlite,
-  NodeFS, pg pool, WASM heap probe).
+- `experiments/memory/` scripts in this repository (baseline, historical worker,
+  PGlite, NodeFS, pg pool, WASM heap probe).
 - PGlite project documentation:
   [https://pglite.dev/docs/about](https://pglite.dev/docs/about).
 - ElectricSQL announcement explaining the target use cases:

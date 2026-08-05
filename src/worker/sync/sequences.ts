@@ -1,5 +1,4 @@
-import type { PgPoolClient } from "../db.ts";
-import { mainDb, syncPool } from "../db.ts";
+import { type EngineState, type PgPoolClient, requireMainDb } from "../db.ts";
 import { ident } from "../utils.ts";
 
 /**
@@ -8,9 +7,11 @@ import { ident } from "../utils.ts";
  * @param tableName The name of the table.
  */
 export async function synchronizeTableSequences(
+  state: EngineState,
   remoteClient: PgPoolClient,
   tableName: string,
 ) {
+  const mainDb = requireMainDb(state);
   const sequencesResult = await remoteClient.query(
     `
         SELECT s.sequencename, c.column_name
@@ -46,8 +47,12 @@ export async function synchronizeTableSequences(
 /**
  * Synchronizes all sequences for all user tables from remote to local.
  */
-export async function synchronizeSequences(): Promise<number> {
+export async function synchronizeSequences(
+  state: EngineState,
+): Promise<number> {
+  const syncPool = state.syncPool;
   if (!syncPool) return 0;
+  const mainDb = requireMainDb(state);
 
   const client = await syncPool.connect();
   try {
@@ -57,7 +62,7 @@ export async function synchronizeSequences(): Promise<number> {
         `);
 
     for (const tableRow of tablesResult.rows as Array<{ tablename: string }>) {
-      await synchronizeTableSequences(client, tableRow.tablename);
+      await synchronizeTableSequences(state, client, tableRow.tablename);
     }
 
     return tablesResult.rows.length;

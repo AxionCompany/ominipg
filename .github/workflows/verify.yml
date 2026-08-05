@@ -1,0 +1,52 @@
+name: Verify
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+      - "feat/**"
+  pull_request:
+
+jobs:
+  deno:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: denoland/setup-deno@v2
+      - run: deno task check
+      - run: deno task test:deno
+      - run: deno task check:publish
+
+  node:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22, 24]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: deno task build:npm
+      - run: node scripts/check_node_portability.mjs
+
+  bun:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: denoland/setup-deno@v2
+      - uses: oven-sh/setup-bun@v2
+      - run: deno task build:npm
+      - run: bun scripts/check_node_portability.mjs
+
+  cloudflare-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: deno task build:npm
+      - run: npx --yes esbuild@0.25.9 npm/esm/client/index.js --bundle --platform=browser --format=esm --outfile=/tmp/ominipg-cloudflare-bundle.js
