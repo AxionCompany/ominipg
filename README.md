@@ -15,10 +15,11 @@ Drizzle integration behind one session API. Every connection is now an
 `ominipg.session.v1` Oxian workload, whether it runs inside an application or
 behind an Oxian Hypervisor.
 
-The default is lightweight and embedded: Ominipg creates an in-process Oxian
-`WorkerHost` in the current JavaScript isolate. It uses Web Streams and does not
-open a WebSocket or create a Web Worker/thread. Applications can instead inject
-a shared `WorkerHost` or another Oxian-compatible dispatcher.
+The default is lightweight and embedded: Ominipg creates a private Oxian
+Hypervisor and an in-process Worker in the current JavaScript isolate. It uses
+Web Streams and does not open a WebSocket or create a Web Worker/thread.
+Applications can instead inject a shared Hypervisor or another Oxian-compatible
+dispatcher.
 
 ## Highlights
 
@@ -191,19 +192,20 @@ Database choice and execution topology are independent:
 | PGlite file   | `file://...`                           | Local/offline persistence where the runtime supports it |
 | PostgreSQL    | `postgres://...` or `postgresql://...` | Server database and notifications                       |
 
-| Topology          | Configuration                              | Transport and ownership                                                      |
-| ----------------- | ------------------------------------------ | ---------------------------------------------------------------------------- |
-| Private embedded  | Omit `oxian`                               | One private host/workload per connection; closed by `db.close()`             |
-| Shared embedded   | Pass `{ oxian: { dispatcher: host } }`     | Same isolate and event loop; application owns the host                       |
-| Hypervisor-routed | Pass a Hypervisor or compatible dispatcher | Workload may execute in another process/runtime; dispatcher owner manages it |
+| Topology          | Configuration                                | Transport and ownership                                                      |
+| ----------------- | -------------------------------------------- | ---------------------------------------------------------------------------- |
+| Private embedded  | Omit `oxian`                                 | One private Hypervisor/Worker per connection; closed by `db.close()`         |
+| Shared embedded   | Pass `{ oxian: { dispatcher: hypervisor } }` | Same isolate and event loop; application owns the topology                   |
+| Hypervisor-routed | Pass a Hypervisor or compatible dispatcher   | Workload may execute in another process/runtime; dispatcher owner manages it |
 
 All three use the same framed byte-stream session. The embedded path avoids
 socket, handshake, authentication, reconnect, and remote protocol overhead.
 
-### Shared in-process host
+### Shared in-process topology
 
 ```ts
-import { createWorkerHost } from "jsr:@oxian/oxian-js@0.20.0-rc.6/host";
+import { createHypervisor } from "jsr:@oxian/oxian-js@0.20.0-rc.7/hypervisor";
+import { createWorker } from "jsr:@oxian/oxian-js@0.20.0-rc.7/worker";
 import {
   createOminipgWorkload,
   Ominipg,
@@ -211,11 +213,12 @@ import {
 } from "jsr:@oxian/ominipg";
 import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
-const host = createWorkerHost({
+const hypervisor = createHypervisor({
   persistAcceptance: () => Promise.resolve(),
 });
-const worker = host.attachInProcessWorker({
-  workerId: "application-databases",
+const worker = createWorker({
+  id: "application-databases",
+  transport: { type: "in-process", hypervisor },
   capacity: 8,
   workloads: {
     [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
@@ -223,15 +226,18 @@ const worker = host.attachInProcessWorker({
     }),
   },
 });
+const running = worker.run();
+await worker.whenReady();
 
 const db = await Ominipg.connect({
   url: ":memory:",
-  oxian: { dispatcher: host },
+  oxian: { dispatcher: hypervisor },
 });
 
 await db.close(); // closes only this engine session
-await worker.shutdown();
-await host.shutdown();
+await worker.stop();
+await running;
+await hypervisor.shutdown();
 ```
 
 For a remotely attached workload, configure providers in
@@ -245,7 +251,7 @@ runtime-specific module selection when client and worker runtimes differ.
 | Surface                  | Deno               | Node 22+           | Bun                | Cloudflare Worker/browser      |
 | ------------------------ | ------------------ | ------------------ | ------------------ | ------------------------------ |
 | Client/session protocol  | Supported          | npm + CI           | npm + CI           | Web-API-compatible bundle      |
-| Embedded `WorkerHost`    | Supported          | Verified           | Verified in CI     | Same-isolate execution         |
+| Embedded Worker          | Supported          | Verified           | Verified in CI     | Same-isolate execution         |
 | Ominipg workload         | Supported          | Verified           | Verified in CI     | Provider-dependent             |
 | PGlite                   | Provider-dependent | Optional peer      | Optional peer      | Provider/platform limits apply |
 | `pg`/logical replication | Provider-dependent | Optional peers     | Package-dependent  | No generic built-in adapter    |

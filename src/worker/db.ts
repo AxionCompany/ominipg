@@ -40,8 +40,8 @@ export type EngineDependencies = Readonly<{
 /**
  * All mutable state owned by one Ominipg workload session.
  *
- * Keeping this state explicit is what allows multiple embedded WorkerHosts (or
- * multiple sessions on one shared host) to coexist in the same isolate.
+ * Keeping this state explicit is what allows multiple embedded Workers (or
+ * multiple sessions on one shared Hypervisor) to coexist in the same isolate.
  */
 export interface EngineState {
   mainDb?: DatabaseClient;

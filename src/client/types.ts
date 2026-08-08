@@ -134,9 +134,9 @@ export interface OminipgConnectionOptions {
   pgPoolMax?: number;
 
   /**
-   * Existing Oxian dispatcher used for a shared in-process host or a routed
-   * Hypervisor connection. When omitted, Ominipg creates a private embedded
-   * WorkerHost in the current JavaScript isolate.
+   * Existing Oxian dispatcher used for shared or routed execution. When
+   * omitted, Ominipg creates a private Hypervisor and an in-process Worker in
+   * the current JavaScript isolate.
    */
   oxian?: OminipgSessionTransport;
 

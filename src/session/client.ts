@@ -1,7 +1,4 @@
-import type {
-  WorkerHostDispatchInput,
-  WorkerHostWorkHandle,
-} from "@oxian/oxian-js/host";
+import type { Dispatcher, WorkHandle, WorkInput } from "@oxian/oxian-js/work";
 import type {
   PgNotification,
   PgSubscription,
@@ -17,15 +14,13 @@ import {
   sessionRequest,
 } from "./protocol.ts";
 
-export type OminipgDispatcher = Readonly<{
-  dispatch(input: WorkerHostDispatchInput): Promise<WorkerHostWorkHandle>;
-}>;
+export type OminipgDispatcher = Dispatcher;
 
 export type OminipgSessionTransport = Readonly<{
   dispatcher: OminipgDispatcher;
   workload?: string;
-  target?: WorkerHostDispatchInput["target"];
-  metadata?: WorkerHostDispatchInput["metadata"];
+  target?: WorkInput["target"];
+  metadata?: WorkInput["metadata"];
   deadlineAtMs?: number;
   signal?: AbortSignal;
   /** Maximum incoming session frame size; defaults to 512 MiB. */
@@ -39,7 +34,7 @@ type PendingRequest = {
 };
 
 type SessionClientOptions = Readonly<{
-  handle: WorkerHostWorkHandle;
+  handle: WorkHandle;
   input: WritableStreamDefaultWriter<Uint8Array>;
   onError(error: Error): void;
   onClose(): void | Promise<void>;
@@ -127,7 +122,7 @@ export class OminipgSessionClient {
   private subscriptionId = 0;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly subscriptions = new Map<string, RemoteSubscription>();
-  private readonly handle: WorkerHostWorkHandle;
+  private readonly handle: WorkHandle;
   private readonly input: WritableStreamDefaultWriter<Uint8Array>;
   private readonly onError: (error: Error) => void;
   private readonly onClose: () => void | Promise<void>;
@@ -343,7 +338,7 @@ export async function openOminipgSession(
 ): Promise<OminipgSessionClient> {
   const input = new TransformStream<Uint8Array, Uint8Array>();
   const writer = input.writable.getWriter();
-  let handle: WorkerHostWorkHandle | undefined;
+  let handle: WorkHandle | undefined;
   try {
     handle = await transport.dispatcher.dispatch({
       workload: transport.workload ?? OMINIPG_SESSION_WORKLOAD,

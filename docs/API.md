@@ -238,9 +238,9 @@ syncUrl: "postgresql://user:pass@myserver.com:5432/prod_db";
 #### `oxian` (optional)
 
 - **Type:** `OminipgSessionTransport`
-- **Default:** A private embedded `WorkerHost`
-- **Description:** Supplies a shared `WorkerHost`, Hypervisor, or structurally
-  compatible dispatcher.
+- **Default:** A private Hypervisor with one in-process Worker
+- **Description:** Supplies an application-owned Hypervisor or another
+  structurally compatible dispatcher.
 
 ```ts
 type OminipgSessionTransport = Readonly<{
@@ -587,8 +587,8 @@ await db.close();
 - Emits `"close"` event when connection is closed
 
 For a private embedded session, `close()` also shuts down its private Oxian
-worker and host. For an injected dispatcher it closes only the database session;
-the embedding application owns host/Hypervisor shutdown.
+Worker and Hypervisor. For an injected dispatcher it closes only the database
+session; the embedding application owns Worker/Hypervisor shutdown.
 
 ---
 

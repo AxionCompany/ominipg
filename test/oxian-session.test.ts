@@ -4,7 +4,8 @@ import {
   assertRejects,
   assertThrows,
 } from "@std/assert";
-import { createWorkerHost } from "@oxian/oxian-js/host";
+import { createHypervisor } from "@oxian/oxian-js/hypervisor";
+import { createWorker } from "@oxian/oxian-js/worker";
 import {
   createOminipgWorkload,
   Ominipg,
@@ -141,13 +142,14 @@ Deno.test("transactions commit or roll back inside one Oxian session", async () 
   }
 });
 
-Deno.test("one shared WorkerHost carries multiple independent Ominipg sessions", async () => {
+Deno.test("one shared Hypervisor carries multiple independent Ominipg sessions", async () => {
   const provider = createPGliteProvider();
-  const host = createWorkerHost({
+  const hypervisor = createHypervisor({
     persistAcceptance: () => Promise.resolve(),
   });
-  const worker = host.attachInProcessWorker({
-    workerId: "ominipg-test-worker",
+  const worker = createWorker({
+    id: "ominipg-test-worker",
+    transport: { type: "in-process", hypervisor },
     workloads: {
       [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
         dependencies: { pgliteProvider: provider },
@@ -155,7 +157,10 @@ Deno.test("one shared WorkerHost carries multiple independent Ominipg sessions",
     },
     capacity: 2,
   });
-  const transport = { dispatcher: host };
+  const running = worker.run();
+  void running.catch(() => {});
+  await worker.whenReady();
+  const transport = { dispatcher: hypervisor };
   const schemaSQL = ["CREATE TABLE identity(value TEXT NOT NULL)"];
   const first = await Ominipg.connect({
     url: ":memory:",
@@ -178,13 +183,14 @@ Deno.test("one shared WorkerHost carries multiple independent Ominipg sessions",
     ]);
 
     await first.close();
-    assertEquals(host.snapshot().workers, 1);
+    assertEquals(hypervisor.snapshot().inProcessWorkers, 1);
     assertEquals((await second.query("SELECT value FROM identity")).rows, [
       { value: "second" },
     ]);
   } finally {
     await Promise.all([first.close(), second.close()]);
-    await worker.shutdown();
-    await host.shutdown();
+    await worker.stop();
+    await running;
+    await hypervisor.shutdown();
   }
 });

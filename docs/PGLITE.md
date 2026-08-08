@@ -5,8 +5,8 @@ ships with `@electric-sql/pglite`. The goal is to help decide when PGlite is a
 good fit and when a PostgreSQL service (or another engine) is more appropriate.
 
 The worker-isolate rows below are historical measurements from Ominipg before
-0.9. Ominipg 0.9's default Oxian `WorkerHost` is same-isolate and does not
-create the extra Web Worker/`worker_threads` isolate measured there.
+0.9. Ominipg 0.9's default Oxian Worker uses an in-process transport and does
+not create the extra Web Worker/`worker_threads` isolate measured there.
 
 ## Memory Profile
 

@@ -96,14 +96,14 @@ const db = await Ominipg.connect({
 });
 ```
 
-Every connection uses a private embedded Oxian host by default. To use an
-application-owned shared host or Hypervisor:
+Every connection uses a private embedded Oxian topology by default. To use an
+application-owned Hypervisor:
 
 ```ts
 const db = await Ominipg.connect({
   url: ":memory:",
   oxian: {
-    dispatcher: host,
+    dispatcher: hypervisor,
     metadata: { tenantId },
   },
 });

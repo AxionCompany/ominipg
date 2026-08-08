@@ -51,8 +51,8 @@ Web Worker, or `worker_threads` data path.
 ## Architecture Rules
 
 - One Oxian dispatch owns one `OminipgEngine` and one explicit `EngineState`.
-- The default private `WorkerHost` is same-isolate and event-loop local; it is
-  not thread, memory, crash, or security isolation.
+- The default private Hypervisor and in-process Worker are same-isolate and
+  event-loop local; they are not thread, memory, crash, or security isolation.
 - An injected dispatcher is application-owned and must not be shut down by an
   individual Ominipg client.
 - Provider callbacks and platform bindings belong to the workload runtime.

@@ -133,8 +133,8 @@ export type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
  * standards-compatible JavaScript runtimes:
  * - **In-memory**: Using PGlite (PostgreSQL in WASM)
  * - **Persistent**: File-based PGlite storage
- * - **Embedded**: An in-process Oxian WorkerHost in the current isolate
- * - **Routed**: A shared WorkerHost or Hypervisor-backed Oxian dispatcher
+ * - **Embedded**: A private Hypervisor and in-process Worker in this isolate
+ * - **Routed**: An application-owned Oxian dispatcher targeting shared workers
  *
  * The class extends TypedEmitter to provide event-based notifications for
  * connection, sync, and error events.
@@ -247,12 +247,14 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       throw new Error("pgPoolMax must be a positive integer.");
     }
 
-    const embedded = options.oxian ? undefined : createEmbeddedOminipgSession({
-      pgliteProvider: options.pgliteProvider,
-      pgProvider: options.pgProvider,
-      pgliteConfig: options.pgliteConfig,
-      getRssMb: options.runtime?.getRssMb,
-    });
+    const embedded = options.oxian
+      ? undefined
+      : await createEmbeddedOminipgSession({
+        pgliteProvider: options.pgliteProvider,
+        pgProvider: options.pgProvider,
+        pgliteConfig: options.pgliteConfig,
+        getRssMb: options.runtime?.getRssMb,
+      });
     const clientRef: { current?: Ominipg } = {};
     let session: OminipgSessionClient;
     try {
