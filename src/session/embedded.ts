@@ -14,21 +14,24 @@ export type EmbeddedOminipgSession = Readonly<{
 export async function createEmbeddedOminipgSession(
   dependencies: OminipgEngineDependencies,
 ): Promise<EmbeddedOminipgSession> {
+  const sessionId = crypto.randomUUID();
+  const transport = {
+    type: "in-process",
+    config: { topic: `ominipg:${sessionId}` },
+  } as const;
   const hypervisor = createHypervisor({
-    persistAcceptance: () => Promise.resolve(),
+    transports: [transport],
   });
   const worker = createWorker({
-    id: `ominipg-${crypto.randomUUID()}`,
-    transport: { type: "in-process", hypervisor },
+    id: `ominipg-${sessionId}`,
+    transport,
     workloads: {
       [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({ dependencies }),
     },
     capacity: 1,
   });
-  const running = worker.run();
-  void running.catch(() => {});
   try {
-    await worker.whenReady();
+    await worker.ready;
   } catch (error) {
     await worker.stop("ominipg_session_start_failed").catch(() => {});
     await hypervisor.shutdown("ominipg_session_start_failed").catch(() => {});
@@ -42,7 +45,7 @@ export async function createEmbeddedOminipgSession(
       closed = true;
       try {
         await worker.stop("ominipg_session_closed");
-        await running;
+        await worker.closed;
       } finally {
         await hypervisor.shutdown("ominipg_session_closed");
       }

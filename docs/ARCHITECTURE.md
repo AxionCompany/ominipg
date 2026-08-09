@@ -21,7 +21,7 @@ flowchart LR
     H["Hypervisor"]
     W["Worker\ntransport: in-process"]
     IW["In-process workload"]
-    H <--> W
+    H <-->|"addressed event fabric / oxian.worker.v1"| W
     W --> IW
   end
 
@@ -168,9 +168,11 @@ When `oxian` is absent, Ominipg creates a private Hypervisor and an in-process
 Worker carrying one workload with capacity one, then dispatches the session
 through the Hypervisor. `db.close()` closes the engine, Worker, and Hypervisor.
 
-This path stays inside one JavaScript isolate. Oxian passes Web Streams
-directly; there is no WebSocket handshake, wire protocol, reconnect loop, Web
-Worker, or worker thread.
+This path stays inside one JavaScript isolate. Oxian carries encoded control and
+binary frames through an addressed event fabric and runs the same handshake,
+readiness, heartbeat, lease, acceptance, credit, cancellation, drain, and
+shutdown state machines as WebSocket Workers. It creates no socket, Web Worker,
+worker thread, or runtime isolate.
 
 ### Shared embedded
 

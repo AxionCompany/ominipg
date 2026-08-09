@@ -113,7 +113,9 @@ inside a Durable Object when a long-lived database session is required.
 ## Browser
 
 The client and private in-process topology use standard Web APIs and can bundle
-for browsers. In-memory PGlite requires a compatible browser PGlite build.
+for browsers. Oxian's same-realm event fabric runs the same framed lifecycle as
+other transports without requiring a native socket API. In-memory PGlite
+requires a compatible browser PGlite build.
 Current Ominipg URL selection supports `:memory:` and `file://` for PGlite;
 browser persistence schemes are not exposed by this release.
 

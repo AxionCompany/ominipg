@@ -144,12 +144,16 @@ Deno.test("transactions commit or roll back inside one Oxian session", async () 
 
 Deno.test("one shared Hypervisor carries multiple independent Ominipg sessions", async () => {
   const provider = createPGliteProvider();
+  const transportDeclaration = {
+    type: "in-process",
+    config: { topic: `ominipg-test:${crypto.randomUUID()}` },
+  } as const;
   const hypervisor = createHypervisor({
-    persistAcceptance: () => Promise.resolve(),
+    transports: [transportDeclaration],
   });
   const worker = createWorker({
     id: "ominipg-test-worker",
-    transport: { type: "in-process", hypervisor },
+    transport: transportDeclaration,
     workloads: {
       [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
         dependencies: { pgliteProvider: provider },
@@ -157,9 +161,7 @@ Deno.test("one shared Hypervisor carries multiple independent Ominipg sessions",
     },
     capacity: 2,
   });
-  const running = worker.run();
-  void running.catch(() => {});
-  await worker.whenReady();
+  await worker.ready;
   const transport = { dispatcher: hypervisor };
   const schemaSQL = ["CREATE TABLE identity(value TEXT NOT NULL)"];
   const first = await Ominipg.connect({
@@ -190,7 +192,7 @@ Deno.test("one shared Hypervisor carries multiple independent Ominipg sessions",
   } finally {
     await Promise.all([first.close(), second.close()]);
     await worker.stop();
-    await running;
+    await worker.closed;
     await hypervisor.shutdown();
   }
 });

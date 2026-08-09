@@ -31,8 +31,14 @@ the `ominipg.session.v1` workload, and opens one session. Provider callbacks and
 non-serializable PGlite configuration stay process-local. `db.close()` owns all
 private cleanup.
 
-The private topology is event-loop local. It does not create a thread, isolate,
-listener, or WebSocket.
+Each private session owns a unique event-fabric topic, so independently embedded
+libraries cannot collide. Frames are addressed to one logical connection; the
+topic is a rendezvous namespace, not a work-broadcast channel. Closing the
+session stops its Worker, unregisters the Hypervisor binding, and releases the
+topic.
+
+The private topology is event-loop local. It executes the complete Oxian v1
+lifecycle but does not create a thread, isolate, listener, or WebSocket.
 
 ## Shared application topology
 
@@ -40,8 +46,8 @@ Use a shared Hypervisor when an application or higher-level library owns several
 worker-enabled capabilities:
 
 ```ts
-import { createHypervisor } from "jsr:@oxian/oxian-js@0.20.0-rc.7/hypervisor";
-import { createWorker } from "jsr:@oxian/oxian-js@0.20.0-rc.7/worker";
+import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.1/hypervisor";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.1/worker";
 import {
   createOminipgWorkload,
   Ominipg,
@@ -49,13 +55,15 @@ import {
 } from "jsr:@oxian/ominipg";
 import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
-const hypervisor = createHypervisor({
-  persistAcceptance: () => Promise.resolve(),
-});
+const local = {
+  type: "in-process",
+  config: { topic: "embedded-application" },
+} as const;
+const hypervisor = createHypervisor({ transports: [local] });
 
 const worker = createWorker({
   id: "embedded-application",
-  transport: { type: "in-process", hypervisor },
+  transport: local,
   capacity: 8,
   workloads: {
     [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
@@ -66,8 +74,7 @@ const worker = createWorker({
     "application.turn.v1": applicationTurnWorkload,
   },
 });
-const running = worker.run();
-await worker.whenReady();
+await worker.ready;
 
 const first = await Ominipg.connect({
   url: ":memory:",
@@ -82,7 +89,7 @@ await first.close(); // second and the shared topology remain alive
 await second.close();
 
 await worker.stop();
-await running;
+await worker.closed;
 await hypervisor.shutdown();
 ```
 
@@ -152,18 +159,22 @@ Node, Bun, or Cloudflare worker.
 worker:
 
 ```ts
-import { createWorker } from "jsr:@oxian/oxian-js@0.20.0-rc.7/worker";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.1/worker";
 import {
   createOminipgWorkload,
   OMINIPG_SESSION_WORKLOAD,
 } from "jsr:@oxian/ominipg/workload";
 
 const worker = createWorker({
-  transport: { type: "websocket", url: hypervisorWorkerUrl },
-  identity,
-  credential,
-  credentialPersistence: "durable",
-  persistResumeCredential,
+  id: "database-worker",
+  transport: {
+    type: "websocket",
+    config: { url: hypervisorWorkerUrl },
+  },
+  activate: ({ workerId }) => attempts.activate(workerId),
+  register: ({ identity }) => credentials.issue(identity),
+  handshake: ({ rotation, bootstrap }) =>
+    workerState.persistRotationAndBootstrap(rotation, bootstrap),
   capacity: 8,
   workloads: {
     [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
@@ -172,7 +183,8 @@ const worker = createWorker({
   },
 });
 
-await worker.run();
+await worker.ready;
+await worker.closed;
 ```
 
 The application process that owns an Oxian Hypervisor can pass it directly:
@@ -197,22 +209,23 @@ owning Hypervisor.
 
 ## In-process versus WebSocket
 
-| Concern                         | In-process Worker binding | WebSocket Worker                           |
-| ------------------------------- | ------------------------- | ------------------------------------------ |
-| Socket/handshake                | None                      | WSS and Oxian handshake                    |
-| Ominipg session framing         | Yes                       | Yes                                        |
-| Oxian wire framing/credit       | None                      | Yes                                        |
-| Serialization                   | Ominipg values only       | Ominipg plus Oxian transport               |
-| Backpressure/cancellation       | Direct Web Streams        | Mapped to remote protocol                  |
-| Event-loop isolation            | No                        | Yes when worker is another process/isolate |
-| Memory/crash/security isolation | No                        | Deployment-dependent                       |
-| Reconnect/credentials           | None                      | Oxian worker lifecycle                     |
-| Relative overhead               | Lowest worker topology    | Higher, with isolation/routing             |
+| Concern                         | In-process event fabric              | WebSocket Worker                           |
+| ------------------------------- | ------------------------------------ | ------------------------------------------ |
+| Physical connection             | Same-realm addressed events          | WSS socket                                 |
+| Oxian handshake/lifecycle       | Complete `oxian.worker.v1` lifecycle | Complete `oxian.worker.v1` lifecycle       |
+| Ominipg session framing         | Yes                                  | Yes                                        |
+| Oxian framing/credit            | Yes, through the shared codec/kernel | Yes, through the shared codec/kernel       |
+| Backpressure/cancellation       | Credited Web Streams                  | Credited Web Streams                       |
+| Event-loop isolation            | No                                   | Yes when worker is another process/isolate |
+| Memory/crash/security isolation | No                                   | Deployment-dependent                       |
+| Network/TLS overhead            | None                                 | Deployment-dependent                       |
+| Relative overhead               | Lower physical transport cost        | Higher, with isolation/routing             |
 
-The in-process path is normally lighter than loopback WebSocket execution. It is
-not as cheap as calling the engine directly because Ominipg deliberately keeps
-the same stream protocol for every topology. That consistency lets an
-application move a workload out of process without rewriting its database API.
+The in-process path is normally lighter than loopback WebSocket execution. It
+still runs the same Oxian codec, lifecycle, protocol ordering, flow control, and
+Ominipg stream protocol. That consistency lets an application move a workload
+out of process without rewriting its database API or changing lifecycle
+semantics.
 
 ## Capacity and database concurrency
 

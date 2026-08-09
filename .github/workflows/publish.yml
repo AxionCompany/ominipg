@@ -19,6 +19,10 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - name: Validate release tag
+        run: >-
+          deno run --allow-read=deno.json scripts/validate_publish_release.ts
+          "${{ github.ref_name }}" "${{ github.ref }}"
       - name: Verify release
         run: deno task verify
       - name: Publish package

@@ -80,15 +80,17 @@ import {
 Place it on an in-process Oxian Worker:
 
 ```ts
-import { createHypervisor } from "jsr:@oxian/oxian-js@0.20.0-rc.7/hypervisor";
-import { createWorker } from "jsr:@oxian/oxian-js@0.20.0-rc.7/worker";
+import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.1/hypervisor";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.1/worker";
 
-const hypervisor = createHypervisor({
-  persistAcceptance: () => Promise.resolve(),
-});
+const local = {
+  type: "in-process",
+  config: { topic: "database-worker" },
+} as const;
+const hypervisor = createHypervisor({ transports: [local] });
 const worker = createWorker({
   id: "database-worker",
-  transport: { type: "in-process", hypervisor },
+  transport: local,
   workloads: {
     [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
       dependencies: { pgliteProvider, pgProvider },
@@ -96,8 +98,7 @@ const worker = createWorker({
   },
   capacity: 4,
 });
-const running = worker.run();
-await worker.whenReady();
+await worker.ready;
 
 const db = await Ominipg.connect({
   url,
@@ -105,8 +106,9 @@ const db = await Ominipg.connect({
 });
 ```
 
-The application owns `worker`, `running`, and `hypervisor`. Closing `db` closes
-only its engine session.
+The application owns `worker` and `hypervisor`. Closing `db` closes only its
+engine session. On application shutdown, call `worker.stop()`, await
+`worker.closed`, and then call `hypervisor.shutdown()`.
 
 ## Provider migration
 

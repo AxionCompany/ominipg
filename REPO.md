@@ -59,7 +59,9 @@ Web Worker, or `worker_threads` data path.
 - All public database features must use the session; do not add a direct bypass.
 - The public dependency closure must stay free of runtime-specific globals,
   builtins, worker constructors, and `postMessage`.
-- Streams are the data plane. Local events/callbacks are observation only.
+- Web Streams are the workload data plane. The local Oxian event fabric carries
+  their credited protocol frames; lifecycle callbacks must not bypass dispatch
+  or invoke workload handlers directly.
 
 ## Warnings
 

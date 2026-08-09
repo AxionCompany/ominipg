@@ -198,14 +198,15 @@ Database choice and execution topology are independent:
 | Shared embedded   | Pass `{ oxian: { dispatcher: hypervisor } }` | Same isolate and event loop; application owns the topology                   |
 | Hypervisor-routed | Pass a Hypervisor or compatible dispatcher   | Workload may execute in another process/runtime; dispatcher owner manages it |
 
-All three use the same framed byte-stream session. The embedded path avoids
-socket, handshake, authentication, reconnect, and remote protocol overhead.
+All three use the same framed byte-stream session and Oxian lifecycle. The
+embedded path avoids sockets, TLS, kernel scheduling, and network I/O while
+still exercising admission, handshake, readiness, credit, and cancellation.
 
 ### Shared in-process topology
 
 ```ts
-import { createHypervisor } from "jsr:@oxian/oxian-js@0.20.0-rc.7/hypervisor";
-import { createWorker } from "jsr:@oxian/oxian-js@0.20.0-rc.7/worker";
+import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.1/hypervisor";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.1/worker";
 import {
   createOminipgWorkload,
   Ominipg,
@@ -213,12 +214,14 @@ import {
 } from "jsr:@oxian/ominipg";
 import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
-const hypervisor = createHypervisor({
-  persistAcceptance: () => Promise.resolve(),
-});
+const local = {
+  type: "in-process",
+  config: { topic: "application-databases" },
+} as const;
+const hypervisor = createHypervisor({ transports: [local] });
 const worker = createWorker({
   id: "application-databases",
-  transport: { type: "in-process", hypervisor },
+  transport: local,
   capacity: 8,
   workloads: {
     [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
@@ -226,8 +229,7 @@ const worker = createWorker({
     }),
   },
 });
-const running = worker.run();
-await worker.whenReady();
+await worker.ready;
 
 const db = await Ominipg.connect({
   url: ":memory:",
@@ -236,7 +238,7 @@ const db = await Ominipg.connect({
 
 await db.close(); // closes only this engine session
 await worker.stop();
-await running;
+await worker.closed;
 await hypervisor.shutdown();
 ```
 
