@@ -67,8 +67,8 @@ Web Worker, or `worker_threads` data path.
 
 - Oxian capacity counts long-lived database sessions rather than SQL queries.
 - PGlite engines are independent and memory-heavy even on a shared host.
-- PostgreSQL transactions rely on request ordering within one session; avoid
-  unrelated concurrent queries during a transaction callback.
+- Transactions own an exclusive client operation lane. Concurrent operations on
+  the same `Ominipg` instance wait until commit or rollback.
 - Routed configuration must be wire-encodable. Functions and custom objects do
   not cross the session.
 - Database provider support still varies by runtime despite the portable core.

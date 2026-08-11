@@ -142,6 +142,82 @@ Deno.test("transactions commit or roll back inside one Oxian session", async () 
   }
 });
 
+Deno.test("concurrent queries wait for an active transaction to settle", async () => {
+  const db = await Ominipg.connect({
+    url: ":memory:",
+    schemaSQL: [
+      "CREATE TABLE entries(position SERIAL PRIMARY KEY, value TEXT NOT NULL)",
+    ],
+    pgliteProvider: createPGliteProvider(),
+  });
+  let releaseTransaction!: () => void;
+  const transactionCanFinish = new Promise<void>((resolve) => {
+    releaseTransaction = resolve;
+  });
+  let transactionStarted!: () => void;
+  const transactionDidStart = new Promise<void>((resolve) => {
+    transactionStarted = resolve;
+  });
+
+  try {
+    const transaction = db.transaction(async (tx) => {
+      await tx.query("INSERT INTO entries(value) VALUES ($1)", ["tx-first"]);
+      transactionStarted();
+      await transactionCanFinish;
+      await tx.query("INSERT INTO entries(value) VALUES ($1)", ["tx-second"]);
+    });
+    await transactionDidStart;
+
+    const outsideQuery = db.query(
+      "INSERT INTO entries(value) VALUES ($1)",
+      ["outside"],
+    );
+    releaseTransaction();
+    await Promise.all([transaction, outsideQuery]);
+
+    assertEquals(
+      (await db.query("SELECT position, value FROM entries ORDER BY position"))
+        .rows,
+      [
+        { position: 1, value: "tx-first" },
+        { position: 2, value: "tx-second" },
+        { position: 3, value: "outside" },
+      ],
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+Deno.test("concurrent transactions execute in request order", async () => {
+  const db = await Ominipg.connect({
+    url: ":memory:",
+    schemaSQL: [
+      "CREATE TABLE entries(position SERIAL PRIMARY KEY, value TEXT NOT NULL)",
+    ],
+    pgliteProvider: createPGliteProvider(),
+  });
+  try {
+    await Promise.all([
+      db.transaction(async (tx) => {
+        await tx.query("INSERT INTO entries(value) VALUES ($1)", ["first-a"]);
+        await Promise.resolve();
+        await tx.query("INSERT INTO entries(value) VALUES ($1)", ["first-b"]);
+      }),
+      db.transaction(async (tx) => {
+        await tx.query("INSERT INTO entries(value) VALUES ($1)", ["second"]);
+      }),
+    ]);
+
+    assertEquals(
+      (await db.query("SELECT value FROM entries ORDER BY position")).rows,
+      [{ value: "first-a" }, { value: "first-b" }, { value: "second" }],
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 Deno.test("one shared Hypervisor carries multiple independent Ominipg sessions", async () => {
   const provider = createPGliteProvider();
   const transportDeclaration = {

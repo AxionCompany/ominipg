@@ -227,8 +227,9 @@ checks out a pool client on `BEGIN` and retains it for every session query until
 the transaction ends. Closing an engine with an active transaction attempts a
 rollback before releasing the connection.
 
-A transaction is session-scoped, not an application-wide lock. Avoid unrelated
-concurrent calls on the same client during its callback.
+A transaction is session-scoped, not an application-wide lock. The client owns
+an exclusive operation lane for the entire callback, so unrelated concurrent
+calls on the same instance wait until commit or rollback.
 
 ### Sync
 

@@ -120,8 +120,9 @@ const user = await db.transaction(async (tx) => {
 });
 ```
 
-Do not issue unrelated concurrent queries on the same `Ominipg` instance while
-its transaction callback is active.
+Queries and other database operations submitted concurrently on the same
+`Ominipg` instance wait until the transaction callback settles. Use the `tx`
+argument for every query that belongs to the transaction.
 
 ### Local-first sync
 

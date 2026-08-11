@@ -388,12 +388,15 @@ commit fails.
 
 ```ts
 async transaction<T>(
-  callback: (transaction: Ominipg) => T | Promise<T>,
+  callback: (transaction: OminipgTransaction) => T | Promise<T>,
 ): Promise<T>
 ```
 
-PostgreSQL execution pins one pool client for the transaction. Avoid unrelated
-concurrent queries on the same `Ominipg` instance during the callback.
+PostgreSQL execution pins one pool client for the transaction. Concurrent
+operations on the same `Ominipg` instance wait until the callback commits or
+rolls back. The transaction view exposes `query()` and `queryRaw()`.
+Use that view for transaction queries; awaiting parent-instance operations from
+inside the callback would wait for the callback itself to settle.
 
 ```ts
 const result = await db.transaction(async (tx) => {

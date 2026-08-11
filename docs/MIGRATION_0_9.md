@@ -181,8 +181,8 @@ For PostgreSQL, the engine pins one pool client until commit or rollback. Manual
 `BEGIN`/`COMMIT` queries still travel through the same session, but the helper
 provides rollback-on-error behavior.
 
-Do not issue unrelated concurrent queries on the same client while a transaction
-callback is active.
+Unrelated concurrent operations on the same client now wait until an active
+transaction callback commits or rolls back.
 
 ## Notifications
 
