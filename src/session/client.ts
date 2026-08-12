@@ -43,7 +43,16 @@ type SessionClientOptions = Readonly<{
   onError(error: Error): void;
   onClose(): void | Promise<void>;
   maxFrameBytes?: number;
+  requestTimeoutMs?: number;
 }>;
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+function assertRequestTimeout(timeoutMs: number): void {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new TypeError("requestTimeoutMs must be a positive safe integer.");
+  }
+}
 
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
@@ -131,6 +140,7 @@ export class OminipgSessionClient {
   private readonly onError: (error: Error) => void;
   private readonly onClose: () => void | Promise<void>;
   private readonly maxFrameBytes?: number;
+  private readonly requestTimeoutMs: number;
   private readonly reading: Promise<void>;
   private writeTail: Promise<void> = Promise.resolve();
   private closing = false;
@@ -142,6 +152,9 @@ export class OminipgSessionClient {
     this.onError = options.onError;
     this.onClose = options.onClose;
     this.maxFrameBytes = options.maxFrameBytes;
+    this.requestTimeoutMs = options.requestTimeoutMs ??
+      DEFAULT_REQUEST_TIMEOUT_MS;
+    assertRequestTimeout(this.requestTimeoutMs);
     this.reading = this.readOutput();
     // A transport failure is reported through onError immediately. Keep the
     // original promise for close(), but mark both lifecycle rejections handled
@@ -153,8 +166,9 @@ export class OminipgSessionClient {
   async request<T>(
     operation: OminipgSessionOperation,
     payload?: unknown,
-    timeoutMs = 30_000,
+    timeoutMs = this.requestTimeoutMs,
   ): Promise<T> {
+    assertRequestTimeout(timeoutMs);
     if (this.closed || this.closing && operation !== "close") {
       throw new Error("Ominipg session is closed.");
     }
@@ -342,6 +356,7 @@ export async function openOminipgSession(
   hooks: Readonly<{
     onError(error: Error): void;
     onClose(): void | Promise<void>;
+    requestTimeoutMs?: number;
   }>,
 ): Promise<OminipgSessionClient> {
   const input = new TransformStream<Uint8Array, Uint8Array>();
@@ -378,5 +393,6 @@ export async function openOminipgSession(
     onError: hooks.onError,
     onClose: hooks.onClose,
     maxFrameBytes: transport.maxFrameBytes,
+    requestTimeoutMs: hooks.requestTimeoutMs,
   });
 }

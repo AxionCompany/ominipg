@@ -169,6 +169,7 @@ interface OminipgConnectionOptions {
   pgliteProvider?: PGliteProvider;
   pgProvider?: PgProvider;
   pgPoolMax?: number;
+  requestTimeoutMs?: number;
   oxian?: OminipgSessionTransport;
   runtime?: { getRssMb?: () => number | null };
   /** @deprecated Accepted as a no-op. */
@@ -185,6 +186,11 @@ type PGliteConfig = {
   [key: string]: unknown;
 };
 ```
+
+`requestTimeoutMs` defaults to 30 seconds and controls how long the client waits
+for an ordinary workload request, including a SQL query. It does not set or
+cancel PostgreSQL's server-side statement timeout. Migration and analytical
+sessions should set it above their longest expected operation.
 
 ### Properties
 
@@ -394,9 +400,9 @@ async transaction<T>(
 
 PostgreSQL execution pins one pool client for the transaction. Concurrent
 operations on the same `Ominipg` instance wait until the callback commits or
-rolls back. The transaction view exposes `query()` and `queryRaw()`.
-Use that view for transaction queries; awaiting parent-instance operations from
-inside the callback would wait for the callback itself to settle.
+rolls back. The transaction view exposes `query()` and `queryRaw()`. Use that
+view for transaction queries; awaiting parent-instance operations from inside
+the callback would wait for the callback itself to settle.
 
 ```ts
 const result = await db.transaction(async (tx) => {
@@ -863,6 +869,7 @@ interface OminipgConnectionOptions {
   pgliteProvider?: PGliteProvider;
   pgProvider?: PgProvider;
   pgPoolMax?: number;
+  requestTimeoutMs?: number;
   oxian?: OminipgSessionTransport;
   useWorker?: boolean; // deprecated no-op
   schemas?: CrudSchemas;

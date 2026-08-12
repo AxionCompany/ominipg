@@ -134,6 +134,16 @@ export interface OminipgConnectionOptions {
   pgPoolMax?: number;
 
   /**
+   * Maximum time to wait for an ordinary workload request, including SQL
+   * queries, before rejecting it on the client.
+   *
+   * Defaults to 30 seconds. This is a transport/session deadline, not a
+   * PostgreSQL statement timeout: choose a value that exceeds the longest
+   * operation the session is expected to run.
+   */
+  requestTimeoutMs?: number;
+
+  /**
    * Existing Oxian dispatcher used for shared or routed execution. When
    * omitted, Ominipg creates a private Hypervisor and an in-process Worker in
    * the current JavaScript isolate.

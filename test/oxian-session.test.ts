@@ -17,6 +17,32 @@ import {
   encodeSessionFrame,
 } from "../src/session/codec.ts";
 
+function delayedPGliteProvider(delayMs: number) {
+  return {
+    loadPGlite: () =>
+      Promise.resolve({
+        PGlite: class {
+          async query() {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            return { rows: [{ value: "delayed" }] };
+          }
+
+          exec() {
+            return Promise.resolve();
+          }
+
+          listen() {
+            return Promise.resolve();
+          }
+
+          close() {
+            return Promise.resolve();
+          }
+        },
+      }),
+  };
+}
+
 Deno.test("session codec preserves database value types across arbitrary chunks", async () => {
   const original = {
     bigint: 9007199254740993n,
@@ -95,6 +121,50 @@ Deno.test("Oxian sessions stream query frames larger than one protocol chunk", a
   } finally {
     await db.close();
   }
+});
+
+Deno.test("session request timeout is configurable for long queries", async () => {
+  const db = await Ominipg.connect({
+    url: ":memory:",
+    pgliteProvider: delayedPGliteProvider(40),
+    requestTimeoutMs: 1_000,
+  });
+  try {
+    assertEquals((await db.query("SELECT delayed")).rows, [
+      { value: "delayed" },
+    ]);
+  } finally {
+    await db.close();
+  }
+
+  const expiring = await Ominipg.connect({
+    url: ":memory:",
+    pgliteProvider: delayedPGliteProvider(40),
+    requestTimeoutMs: 10,
+  });
+  try {
+    await assertRejects(
+      () => expiring.query("SELECT delayed"),
+      Error,
+      "request timed out after 10ms",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    await expiring.close();
+  }
+});
+
+Deno.test("session request timeout must be a positive safe integer", async () => {
+  await assertRejects(
+    () =>
+      Ominipg.connect({
+        url: ":memory:",
+        pgliteProvider: delayedPGliteProvider(0),
+        requestTimeoutMs: 0,
+      }),
+    TypeError,
+    "requestTimeoutMs must be a positive safe integer",
+  );
 });
 
 Deno.test("private embedded Oxian sessions own independent engines", async () => {

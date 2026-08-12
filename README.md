@@ -306,6 +306,9 @@ await Ominipg.connect({
   pgliteMemoryProfile: "low-memory",
   pgliteConfig: {},
   pgPoolMax: 5,
+  // Increase for migrations or analytical statements that can exceed the
+  // default 30-second session request deadline.
+  requestTimeoutMs: 10 * 60_000,
 
   oxian: {
     dispatcher,

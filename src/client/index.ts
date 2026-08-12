@@ -263,9 +263,13 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   ): Promise<Ominipg | OminipgWithCrud<S>> {
     const url = options.url || `:memory:`;
     const pgPoolMax = options.pgPoolMax ?? 5;
+    const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
 
     if (!Number.isSafeInteger(pgPoolMax) || pgPoolMax < 1) {
       throw new Error("pgPoolMax must be a positive integer.");
+    }
+    if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
+      throw new TypeError("requestTimeoutMs must be a positive safe integer.");
     }
 
     const embedded = options.oxian
@@ -286,6 +290,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
             clientRef.current?.emit("error", error);
           },
           onClose: () => embedded?.close(),
+          requestTimeoutMs,
         },
       );
     } catch (error) {
@@ -299,6 +304,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       schemas: _schemas,
       oxian: _oxian,
       runtime: _runtime,
+      requestTimeoutMs: _requestTimeoutMs,
       useWorker: _legacyUseWorker,
       pgliteProvider: _pgliteProvider,
       pgProvider: _pgProvider,
