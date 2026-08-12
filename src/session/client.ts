@@ -4,7 +4,11 @@ import type {
   PgSubscription,
   PgSubscriptionState,
 } from "../client/types.ts";
-import { decodeSessionFrames, encodeSessionFrame } from "./codec.ts";
+import {
+  decodeSessionFrames,
+  encodeSessionFrame,
+  writeEncodedSessionFrame,
+} from "./codec.ts";
 import {
   OMINIPG_SESSION_PROTOCOL,
   OMINIPG_SESSION_WORKLOAD,
@@ -128,6 +132,7 @@ export class OminipgSessionClient {
   private readonly onClose: () => void | Promise<void>;
   private readonly maxFrameBytes?: number;
   private readonly reading: Promise<void>;
+  private writeTail: Promise<void> = Promise.resolve();
   private closing = false;
   private closed = false;
 
@@ -169,10 +174,13 @@ export class OminipgSessionClient {
         timer,
       });
     });
+    const encoded = encodeSessionFrame(sessionRequest(id, operation, payload));
+    const write = this.writeTail.then(() =>
+      writeEncodedSessionFrame(this.input, encoded)
+    );
+    this.writeTail = write.catch(() => {});
     try {
-      await this.input.write(
-        encodeSessionFrame(sessionRequest(id, operation, payload)),
-      );
+      await write;
     } catch (error) {
       const pending = this.pending.get(id);
       if (pending) {

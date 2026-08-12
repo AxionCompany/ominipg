@@ -72,6 +72,31 @@ Deno.test("session codec carries large binary values without base64 expansion", 
   }
 });
 
+Deno.test("Oxian sessions stream query frames larger than one protocol chunk", async () => {
+  const db = await Ominipg.connect({
+    url: ":memory:",
+    schemaSQL: [
+      "CREATE TABLE large_values(id TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    ],
+    pgliteProvider: createPGliteProvider(),
+  });
+  const value = `start:${"x".repeat(2 * 1024 * 1024)}:end`;
+  try {
+    await db.query(
+      "INSERT INTO large_values(id, value) VALUES ($1, $2)",
+      ["large", value],
+    );
+    assertEquals(
+      (await db.query("SELECT value FROM large_values WHERE id = $1", [
+        "large",
+      ])).rows,
+      [{ value }],
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 Deno.test("private embedded Oxian sessions own independent engines", async () => {
   const provider = createPGliteProvider();
   const schemaSQL = [

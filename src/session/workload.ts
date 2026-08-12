@@ -1,7 +1,11 @@
 import type { WorkerWorkHandler } from "@oxian/oxian-js/worker";
 import type { OminipgEngineDependencies } from "../worker/engine.ts";
 import { OminipgEngine } from "../worker/engine.ts";
-import { decodeSessionFrames, encodeSessionFrame } from "./codec.ts";
+import {
+  decodeSessionFrames,
+  encodeSessionFrame,
+  writeEncodedSessionFrame,
+} from "./codec.ts";
 import {
   assertSessionRequest,
   OMINIPG_SESSION_PROTOCOL,
@@ -32,7 +36,7 @@ class FrameSink {
       return Promise.reject(new Error("Session output is closed."));
     }
     const write = this.tail.then(() =>
-      this.writer.write(encodeSessionFrame(frame))
+      writeEncodedSessionFrame(this.writer, encodeSessionFrame(frame))
     );
     this.tail = write.catch(() => {});
     return write;
