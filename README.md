@@ -206,8 +206,8 @@ still exercising admission, handshake, readiness, credit, and cancellation.
 ### Shared in-process topology
 
 ```ts
-import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.3/hypervisor";
-import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.3/worker";
+import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.4/hypervisor";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.4/worker";
 import {
   createOminipgWorkload,
   Ominipg,
@@ -309,6 +309,8 @@ await Ominipg.connect({
   // Increase for migrations or analytical statements that can exceed the
   // default 30-second session request deadline.
   requestTimeoutMs: 10 * 60_000,
+  // Defaults just below requestTimeoutMs for PostgreSQL; null disables it.
+  statementTimeoutMs: 9 * 60_000,
 
   oxian: {
     dispatcher,

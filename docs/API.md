@@ -170,6 +170,7 @@ interface OminipgConnectionOptions {
   pgProvider?: PgProvider;
   pgPoolMax?: number;
   requestTimeoutMs?: number;
+  statementTimeoutMs?: number | null;
   oxian?: OminipgSessionTransport;
   runtime?: { getRssMb?: () => number | null };
   /** @deprecated Accepted as a no-op. */
@@ -188,9 +189,12 @@ type PGliteConfig = {
 ```
 
 `requestTimeoutMs` defaults to 30 seconds and controls how long the client waits
-for an ordinary workload request, including a SQL query. It does not set or
-cancel PostgreSQL's server-side statement timeout. Migration and analytical
-sessions should set it above their longest expected operation.
+for an ordinary workload request, including a SQL query. PostgreSQL sessions
+default `statementTimeoutMs` to one second less, giving the server time to
+cancel a slow statement and return the connection to a usable state before the
+client deadline. Set `statementTimeoutMs: null` only when server-side statement
+timeouts must be disabled. Migration and analytical sessions should raise both
+deadlines consistently.
 
 ### Properties
 

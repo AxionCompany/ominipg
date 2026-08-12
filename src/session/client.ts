@@ -35,6 +35,7 @@ type PendingRequest = {
   resolve(value: unknown): void;
   reject(reason: unknown): void;
   timer: ReturnType<typeof setTimeout>;
+  timedOut: boolean;
 };
 
 type SessionClientOptions = Readonly<{
@@ -134,6 +135,7 @@ export class OminipgSessionClient {
   private requestId = 0;
   private subscriptionId = 0;
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly idleWaiters = new Set<() => void>();
   private readonly subscriptions = new Map<string, RemoteSubscription>();
   private readonly handle: WorkHandle;
   private readonly input: WritableStreamDefaultWriter<Uint8Array>;
@@ -143,6 +145,7 @@ export class OminipgSessionClient {
   private readonly requestTimeoutMs: number;
   private readonly reading: Promise<void>;
   private writeTail: Promise<void> = Promise.resolve();
+  private requestTail: Promise<void> = Promise.resolve();
   private closing = false;
   private closed = false;
 
@@ -172,13 +175,34 @@ export class OminipgSessionClient {
     if (this.closed || this.closing && operation !== "close") {
       throw new Error("Ominipg session is closed.");
     }
+    const request = this.requestTail.then(
+      () => this.sendRequest<T>(operation, payload, timeoutMs),
+      () => this.sendRequest<T>(operation, payload, timeoutMs),
+    );
+    this.requestTail = request.then(
+      () => undefined,
+      async () => {
+        await this.whenIdle();
+      },
+    );
+    return await request;
+  }
+
+  private async sendRequest<T>(
+    operation: OminipgSessionOperation,
+    payload: unknown,
+    timeoutMs: number,
+  ): Promise<T> {
     const id = ++this.requestId;
     const response = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(
+        const pending = this.pending.get(id);
+        if (!pending || pending.timedOut) return;
+        pending.timedOut = true;
+        pending.reject(
           new Error(
-            `Ominipg '${operation}' request timed out after ${timeoutMs}ms.`,
+            `Ominipg '${operation}' request timed out after ${timeoutMs}ms; ` +
+              "the session will drain it before accepting more work.",
           ),
         );
       }, timeoutMs);
@@ -186,6 +210,7 @@ export class OminipgSessionClient {
         resolve: (value) => resolve(value as T),
         reject,
         timer,
+        timedOut: false,
       });
     });
     const encoded = encodeSessionFrame(sessionRequest(id, operation, payload));
@@ -196,14 +221,18 @@ export class OminipgSessionClient {
     try {
       await write;
     } catch (error) {
-      const pending = this.pending.get(id);
-      if (pending) {
-        clearTimeout(pending.timer);
-        this.pending.delete(id);
+      const pending = this.takePending(id);
+      if (pending && !pending.timedOut) {
         pending.reject(error);
       }
     }
     return await response;
+  }
+
+  /** Resolves after every accepted request has produced a terminal response. */
+  whenIdle(): Promise<void> {
+    if (this.pending.size === 0) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.add(resolve));
   }
 
   async listen(
@@ -289,10 +318,9 @@ export class OminipgSessionClient {
       throw new TypeError("Unsupported Ominipg session protocol.");
     }
     if (frame.kind === "response") {
-      const pending = this.pending.get(frame.id);
+      const pending = this.takePending(frame.id);
       if (!pending) return;
-      clearTimeout(pending.timer);
-      this.pending.delete(frame.id);
+      if (pending.timedOut) return;
       if (frame.ok) {
         pending.resolve(frame.value);
       } else {
@@ -330,9 +358,25 @@ export class OminipgSessionClient {
   private rejectPending(error: Error): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(error);
+      if (!pending.timedOut) pending.reject(error);
     }
     this.pending.clear();
+    this.resolveIdle();
+  }
+
+  private takePending(id: number): PendingRequest | undefined {
+    const pending = this.pending.get(id);
+    if (!pending) return undefined;
+    clearTimeout(pending.timer);
+    this.pending.delete(id);
+    this.resolveIdle();
+    return pending;
+  }
+
+  private resolveIdle(): void {
+    if (this.pending.size > 0) return;
+    for (const resolve of this.idleWaiters) resolve();
+    this.idleWaiters.clear();
   }
 
   private async finish(): Promise<void> {

@@ -582,9 +582,16 @@ async function initializePostgreSQL(
   url: string,
   provider?: PgProvider,
   max = 5,
+  statementTimeoutMs?: number,
 ): Promise<PostgresAdapter> {
   const pg = await loadPgModule(provider);
-  const pool = new pg.Pool({ connectionString: url, max });
+  const pool = new pg.Pool({
+    connectionString: url,
+    max,
+    ...(statementTimeoutMs === undefined
+      ? {}
+      : { statement_timeout: statementTimeoutMs }),
+  });
   const client = await pool.connect();
   try {
     await client.query("SELECT 1"); // Test connection
@@ -622,6 +629,7 @@ export async function initConnections(
       cfg.url,
       state.pgProvider,
       cfg.pgPoolMax ?? 5,
+      cfg.statementTimeoutMs,
     );
     state.mainDb = adapter;
     state.mainPool = adapter.pool;

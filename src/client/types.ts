@@ -144,6 +144,16 @@ export interface OminipgConnectionOptions {
   requestTimeoutMs?: number;
 
   /**
+   * PostgreSQL server-side statement timeout.
+   *
+   * By default this is one second shorter than `requestTimeoutMs` (or one
+   * millisecond shorter for sub-second deadlines), so PostgreSQL cancels a
+   * slow statement and restores the session before the client deadline.
+   * Set `null` only when the server must not enforce a statement timeout.
+   */
+  statementTimeoutMs?: number | null;
+
+  /**
    * Existing Oxian dispatcher used for shared or routed execution. When
    * omitted, Ominipg creates a private Hypervisor and an in-process Worker in
    * the current JavaScript isolate.

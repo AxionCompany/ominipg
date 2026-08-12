@@ -106,6 +106,12 @@ function describePgProvider(
   return Object.keys(descriptor).length > 0 ? descriptor : undefined;
 }
 
+function defaultStatementTimeout(requestTimeoutMs: number): number {
+  return requestTimeoutMs > 1_000
+    ? requestTimeoutMs - 1_000
+    : Math.max(1, requestTimeoutMs - 1);
+}
+
 /**
  * Ominipg instance with CRUD API attached.
  *
@@ -264,12 +270,31 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     const url = options.url || `:memory:`;
     const pgPoolMax = options.pgPoolMax ?? 5;
     const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    const statementTimeoutMs = options.statementTimeoutMs === null
+      ? undefined
+      : options.statementTimeoutMs ?? defaultStatementTimeout(requestTimeoutMs);
 
     if (!Number.isSafeInteger(pgPoolMax) || pgPoolMax < 1) {
       throw new Error("pgPoolMax must be a positive integer.");
     }
     if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
       throw new TypeError("requestTimeoutMs must be a positive safe integer.");
+    }
+    if (
+      statementTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(statementTimeoutMs) || statementTimeoutMs < 1)
+    ) {
+      throw new TypeError(
+        "statementTimeoutMs must be null or a positive safe integer.",
+      );
+    }
+    if (
+      statementTimeoutMs !== undefined &&
+      statementTimeoutMs >= requestTimeoutMs && requestTimeoutMs > 1
+    ) {
+      throw new TypeError(
+        "statementTimeoutMs must be shorter than requestTimeoutMs.",
+      );
     }
 
     const embedded = options.oxian
@@ -305,6 +330,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       oxian: _oxian,
       runtime: _runtime,
       requestTimeoutMs: _requestTimeoutMs,
+      statementTimeoutMs: _statementTimeoutMs,
       useWorker: _legacyUseWorker,
       pgliteProvider: _pgliteProvider,
       pgProvider: _pgProvider,
@@ -317,6 +343,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       ...wireOptions,
       url,
       pgPoolMax,
+      ...(statementTimeoutMs === undefined ? {} : { statementTimeoutMs }),
       // Arbitrary PGlite configuration remains process-local for embedded
       // sessions. Routed workers receive only values that cross the byte stream.
       ...(options.oxian && pgliteConfig ? { pgliteConfig } : {}),
@@ -422,6 +449,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         await this.queryInLane("COMMIT");
         return result;
       } catch (error) {
+        await this.session.whenIdle();
         try {
           await this.queryInLane("ROLLBACK");
         } catch {
@@ -624,7 +652,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
   private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.operationTail.then(operation, operation);
-    this.operationTail = result.then(() => undefined, () => undefined);
+    this.operationTail = result.then(
+      () => this.session.whenIdle(),
+      () => this.session.whenIdle(),
+    );
     return result;
   }
 

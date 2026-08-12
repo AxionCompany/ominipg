@@ -154,6 +154,139 @@ Deno.test("session request timeout is configurable for long queries", async () =
   }
 });
 
+Deno.test("a timed-out request drains before the session accepts another", async () => {
+  const completed: string[] = [];
+  const db = await Ominipg.connect({
+    url: ":memory:",
+    requestTimeoutMs: 10,
+    pgliteProvider: {
+      loadPGlite: () =>
+        Promise.resolve({
+          PGlite: class {
+            async query(sql: string) {
+              if (sql === "SELECT slow") {
+                await new Promise((resolve) => setTimeout(resolve, 40));
+                completed.push("slow");
+              } else if (sql === "SELECT fast") {
+                completed.push("fast");
+              }
+              return { rows: [{ sql }] };
+            }
+            exec() {
+              return Promise.resolve();
+            }
+            listen() {
+              return Promise.resolve();
+            }
+            close() {
+              return Promise.resolve();
+            }
+          },
+        }),
+    },
+  });
+  try {
+    await assertRejects(
+      () => db.query("SELECT slow"),
+      Error,
+      "session will drain it before accepting more work",
+    );
+    assertEquals((await db.query("SELECT fast")).rows, [
+      { sql: "SELECT fast" },
+    ]);
+    assertEquals(completed, ["slow", "fast"]);
+  } finally {
+    await db.close();
+  }
+});
+
+Deno.test("concurrent callers start request deadlines when each request begins", async () => {
+  const completed: string[] = [];
+  const db = await Ominipg.connect({
+    url: ":memory:",
+    requestTimeoutMs: 30,
+    pgliteProvider: {
+      loadPGlite: () =>
+        Promise.resolve({
+          PGlite: class {
+            async query(sql: string) {
+              await new Promise((resolve) => setTimeout(resolve, 20));
+              completed.push(sql);
+              return { rows: [{ sql }] };
+            }
+            exec() {
+              return Promise.resolve();
+            }
+            listen() {
+              return Promise.resolve();
+            }
+            close() {
+              return Promise.resolve();
+            }
+          },
+        }),
+    },
+  });
+  try {
+    const [first, second] = await Promise.all([
+      db.query("SELECT first"),
+      db.query("SELECT second"),
+    ]);
+    assertEquals(first.rows, [{ sql: "SELECT first" }]);
+    assertEquals(second.rows, [{ sql: "SELECT second" }]);
+    assertEquals(completed, ["SELECT first", "SELECT second"]);
+  } finally {
+    await db.close();
+  }
+});
+
+Deno.test("a timed-out transaction drains before rollback and later work", async () => {
+  const operations: string[] = [];
+  const db = await Ominipg.connect({
+    url: ":memory:",
+    requestTimeoutMs: 10,
+    pgliteProvider: {
+      loadPGlite: () =>
+        Promise.resolve({
+          PGlite: class {
+            async query(sql: string) {
+              operations.push(sql);
+              if (sql === "SELECT slow") {
+                await new Promise((resolve) => setTimeout(resolve, 40));
+              }
+              return { rows: [] };
+            }
+            exec() {
+              return Promise.resolve();
+            }
+            listen() {
+              return Promise.resolve();
+            }
+            close() {
+              return Promise.resolve();
+            }
+          },
+        }),
+    },
+  });
+  try {
+    await assertRejects(
+      () => db.transaction((transaction) => transaction.query("SELECT slow")),
+      Error,
+      "session will drain it before accepting more work",
+    );
+    await db.query("SELECT after");
+    assertEquals(operations, [
+      "BEGIN",
+      "SELECT slow",
+      "ROLLBACK",
+      "SELECT after",
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
 Deno.test("session request timeout must be a positive safe integer", async () => {
   await assertRejects(
     () =>
@@ -164,6 +297,17 @@ Deno.test("session request timeout must be a positive safe integer", async () =>
       }),
     TypeError,
     "requestTimeoutMs must be a positive safe integer",
+  );
+  await assertRejects(
+    () =>
+      Ominipg.connect({
+        url: ":memory:",
+        pgliteProvider: delayedPGliteProvider(0),
+        requestTimeoutMs: 100,
+        statementTimeoutMs: 100,
+      }),
+    TypeError,
+    "statementTimeoutMs must be shorter than requestTimeoutMs",
   );
 });
 

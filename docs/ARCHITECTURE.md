@@ -66,7 +66,8 @@ and call the same `Ominipg.query()` method as raw callers.
 - a monotonically increasing request ID correlates responses;
 - multiple request promises share one input/output byte stream;
 - notification and subscription-state frames are delivered as events;
-- request timeouts reject the caller;
+- request timeouts reject the caller, while the session drains the accepted
+  operation before admitting the next one;
 - closing rejects pending requests and closes subscriptions;
 - injected dispatchers remain owned by the embedding application.
 
