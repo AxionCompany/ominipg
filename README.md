@@ -206,8 +206,8 @@ still exercising admission, handshake, readiness, credit, and cancellation.
 ### Shared in-process topology
 
 ```ts
-import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.2/hypervisor";
-import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.2/worker";
+import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.3/hypervisor";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.3/worker";
 import {
   createOminipgWorkload,
   Ominipg,

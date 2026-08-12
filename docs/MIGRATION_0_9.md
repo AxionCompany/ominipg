@@ -80,8 +80,8 @@ import {
 Place it on an in-process Oxian Worker:
 
 ```ts
-import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.2/hypervisor";
-import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.2/worker";
+import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.3/hypervisor";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.3/worker";
 
 const local = {
   type: "in-process",

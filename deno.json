@@ -1,7 +1,7 @@
 {
   "name": "@oxian/ominipg",
   "description": "Runtime-neutral PostgreSQL and PGlite sessions powered by Oxian workloads.",
-  "version": "0.9.0-rc.8",
+  "version": "0.9.0-rc.9",
   "author": "Ominipg",
   "license": "MIT",
   "exports": {
@@ -16,9 +16,9 @@
   },
   "imports": {
     "@deno/dnt": "jsr:@deno/dnt@0.42.3",
-    "@oxian/oxian-js/hypervisor": "jsr:@oxian/oxian-js@0.21.0-rc.2/hypervisor",
-    "@oxian/oxian-js/work": "jsr:@oxian/oxian-js@0.21.0-rc.2/work",
-    "@oxian/oxian-js/worker": "jsr:@oxian/oxian-js@0.21.0-rc.2/worker",
+    "@oxian/oxian-js/hypervisor": "jsr:@oxian/oxian-js@0.21.0-rc.3/hypervisor",
+    "@oxian/oxian-js/work": "jsr:@oxian/oxian-js@0.21.0-rc.3/work",
+    "@oxian/oxian-js/worker": "jsr:@oxian/oxian-js@0.21.0-rc.3/worker",
     "@std/assert": "jsr:@std/assert@1"
   },
   "minimumDependencyAge": {

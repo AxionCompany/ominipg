@@ -38,7 +38,11 @@ session stops its Worker, unregisters the Hypervisor binding, and releases the
 topic.
 
 The private topology is event-loop local. It executes the complete Oxian v1
-lifecycle but does not create a thread, isolate, listener, or WebSocket.
+lifecycle but does not create a thread, isolate, listener, or WebSocket. Because
+there is no intermediary socket lifetime, Oxian does not apply automatic
+connection-age rotation to this in-process path. A durable database session
+remains attached until `db.close()`, explicit Worker/Hypervisor shutdown, or a
+genuine lifecycle failure.
 
 ## Shared application topology
 
@@ -46,8 +50,8 @@ Use a shared Hypervisor when an application or higher-level library owns several
 worker-enabled capabilities:
 
 ```ts
-import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.2/hypervisor";
-import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.2/worker";
+import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.3/hypervisor";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.3/worker";
 import {
   createOminipgWorkload,
   Ominipg,
@@ -159,7 +163,7 @@ Node, Bun, or Cloudflare worker.
 worker:
 
 ```ts
-import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.2/worker";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.3/worker";
 import {
   createOminipgWorkload,
   OMINIPG_SESSION_WORKLOAD,
@@ -207,6 +211,12 @@ not expose that socket as a browser/client database protocol. A remote requester
 needs application ingress that authenticates it and dispatches through the
 owning Hypervisor.
 
+WebSocket connections still use the Hypervisor's configured age rotation. An
+application hosting long-lived remote Ominipg sessions must choose a connection
+lifetime and drain policy compatible with its infrastructure and database
+transaction limits; an in-flight stateful session cannot be replayed after its
+acceptance boundary.
+
 ## In-process versus WebSocket
 
 | Concern                         | In-process event fabric              | WebSocket Worker                           |
@@ -215,7 +225,7 @@ owning Hypervisor.
 | Oxian handshake/lifecycle       | Complete `oxian.worker.v1` lifecycle | Complete `oxian.worker.v1` lifecycle       |
 | Ominipg session framing         | Yes                                  | Yes                                        |
 | Oxian framing/credit            | Yes, through the shared codec/kernel | Yes, through the shared codec/kernel       |
-| Backpressure/cancellation       | Credited Web Streams                  | Credited Web Streams                       |
+| Backpressure/cancellation       | Credited Web Streams                 | Credited Web Streams                       |
 | Event-loop isolation            | No                                   | Yes when worker is another process/isolate |
 | Memory/crash/security isolation | No                                   | Deployment-dependent                       |
 | Network/TLS overhead            | None                                 | Deployment-dependent                       |
