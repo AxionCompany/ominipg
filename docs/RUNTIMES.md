@@ -11,17 +11,17 @@ network, WASM, memory, and platform bindings.
 
 ## Support matrix
 
-| Capability                  | Deno                   | Node.js 22+             | Bun                     | Cloudflare Workers          | Browser                          |
-| --------------------------- | ---------------------- | ----------------------- | ----------------------- | --------------------------- | -------------------------------- |
-| Public client and session   | Supported through JSR  | Supported through npm   | Supported through npm   | Bundle-compatible core      | Bundle-compatible core           |
-| Private embedded host       | Supported              | Verified locally/CI     | CI target               | Same-isolate only           | Same-isolate only                |
-| Shared `WorkerHost`         | Supported              | Verified                | CI target               | Core-compatible             | Core-compatible                  |
-| Ominipg workload handler    | Supported              | Verified                | CI target               | Provider-dependent          | Provider-dependent               |
-| `:memory:` PGlite           | Supported provider     | Optional npm peer       | Package-dependent       | WASM/memory/provider limits | Compatible PGlite build required |
-| `file://` PGlite            | Provider filesystem    | Supported provider      | Provider-dependent      | Not available               | Not available                    |
-| PostgreSQL via `pg`         | Supported npm provider | Optional npm peer       | Package-dependent       | No generic adapter included | No direct TCP driver included    |
-| Logical replication sync    | Supported npm provider | Optional npm peer       | Package-dependent       | No generic adapter included | Not supported directly           |
-| Client to remote dispatcher | Application bridge     | Host/Hypervisor process | Host/Hypervisor process | Application bridge          | Application bridge               |
+| Capability                  | Deno                   | Node.js 22+           | Bun                   | Cloudflare Workers          | Browser                          |
+| --------------------------- | ---------------------- | --------------------- | --------------------- | --------------------------- | -------------------------------- |
+| Public client and session   | Supported through JSR  | Supported through npm | Supported through npm | Bundle-compatible core      | Bundle-compatible core           |
+| Private embedded topology   | Supported              | Verified locally/CI   | CI target             | Same-isolate only           | Same-isolate only                |
+| Shared in-process Worker    | Supported              | Verified              | CI target             | Core-compatible             | Core-compatible                  |
+| Ominipg workload handler    | Supported              | Verified              | CI target             | Provider-dependent          | Provider-dependent               |
+| `:memory:` PGlite           | Supported provider     | Optional npm peer     | Package-dependent     | WASM/memory/provider limits | Compatible PGlite build required |
+| `file://` PGlite            | Provider filesystem    | Supported provider    | Provider-dependent    | Not available               | Not available                    |
+| PostgreSQL via `pg`         | Supported npm provider | Optional npm peer     | Package-dependent     | No generic adapter included | No direct TCP driver included    |
+| Logical replication sync    | Supported npm provider | Optional npm peer     | Package-dependent     | No generic adapter included | Not supported directly           |
+| Client to remote dispatcher | Application bridge     | Hypervisor process    | Hypervisor process    | Application bridge          | Application bridge               |
 
 “Core-compatible” does not imply that a platform can run every database engine.
 For example, a Cloudflare Worker can execute Web Streams and an in-process Oxian
@@ -112,10 +112,12 @@ inside a Durable Object when a long-lived database session is required.
 
 ## Browser
 
-The client and private host use standard Web APIs and can bundle for browsers.
-In-memory PGlite requires a compatible browser PGlite build. Current Ominipg URL
-selection supports `:memory:` and `file://` for PGlite; browser persistence
-schemes are not exposed by this release.
+The client and private in-process topology use standard Web APIs and can bundle
+for browsers. Oxian's same-realm event fabric runs the same framed lifecycle as
+other transports without requiring a native socket API. In-memory PGlite
+requires a compatible browser PGlite build.
+Current Ominipg URL selection supports `:memory:` and `file://` for PGlite;
+browser persistence schemes are not exposed by this release.
 
 A browser cannot pass provider callbacks or platform objects to a remote worker.
 It also cannot connect as an Oxian worker requester merely by opening the

@@ -134,9 +134,29 @@ export interface OminipgConnectionOptions {
   pgPoolMax?: number;
 
   /**
-   * Existing Oxian dispatcher used for a shared in-process host or a routed
-   * Hypervisor connection. When omitted, Ominipg creates a private embedded
-   * WorkerHost in the current JavaScript isolate.
+   * Maximum time to wait for an ordinary workload request, including SQL
+   * queries, before rejecting it on the client.
+   *
+   * Defaults to 30 seconds. This is a transport/session deadline, not a
+   * PostgreSQL statement timeout: choose a value that exceeds the longest
+   * operation the session is expected to run.
+   */
+  requestTimeoutMs?: number;
+
+  /**
+   * PostgreSQL server-side statement timeout.
+   *
+   * By default this is one second shorter than `requestTimeoutMs` (or one
+   * millisecond shorter for sub-second deadlines), so PostgreSQL cancels a
+   * slow statement and restores the session before the client deadline.
+   * Set `null` only when the server must not enforce a statement timeout.
+   */
+  statementTimeoutMs?: number | null;
+
+  /**
+   * Existing Oxian dispatcher used for shared or routed execution. When
+   * omitted, Ominipg creates a private Hypervisor and an in-process Worker in
+   * the current JavaScript isolate.
    */
   oxian?: OminipgSessionTransport;
 

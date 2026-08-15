@@ -52,6 +52,11 @@ jobs:
               : `${manifest.name}@${manifest.version} is already published`,
           );
           NODE
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: >-
+          deno run --allow-read=deno.json scripts/validate_publish_release.ts
+          "${{ github.ref_name }}" "${{ github.ref }}"
       - name: Verify release
         if: steps.release.outputs.publish == 'true'
         run: deno task verify

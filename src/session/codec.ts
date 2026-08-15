@@ -5,6 +5,15 @@ const FRAME_PREFIX_BYTES = 12;
 /** Maximum encoded header plus binary payload accepted by default. */
 export const DEFAULT_MAX_SESSION_FRAME_BYTES = 512 * 1024 * 1024;
 
+/**
+ * Default producer chunk size for an encoded session frame.
+ *
+ * Session frames may be much larger than one transport data frame. Keeping
+ * producer chunks bounded lets Oxian preserve stream backpressure without
+ * staging a complete encoded response as one protocol chunk.
+ */
+export const DEFAULT_SESSION_STREAM_CHUNK_BYTES = 64 * 1024;
+
 type EncodedSpecial = Readonly<{
   [TYPE_KEY]: string;
   value?: unknown;
@@ -189,6 +198,25 @@ export function encodeSessionFrame(value: unknown): Uint8Array {
     offset += part.byteLength;
   }
   return output;
+}
+
+/** Writes one encoded session frame as ordered, backpressured byte chunks. */
+export async function writeEncodedSessionFrame(
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  encoded: Uint8Array,
+  chunkBytes = DEFAULT_SESSION_STREAM_CHUNK_BYTES,
+): Promise<void> {
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes < 1) {
+    throw new TypeError("chunkBytes must be a positive safe integer.");
+  }
+  for (let offset = 0; offset < encoded.byteLength; offset += chunkBytes) {
+    await writer.write(
+      encoded.subarray(
+        offset,
+        Math.min(offset + chunkBytes, encoded.byteLength),
+      ),
+    );
+  }
 }
 
 export function decodeSessionFrame(

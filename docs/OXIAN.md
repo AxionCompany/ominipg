@@ -15,7 +15,7 @@ connection rather than one dispatch per query.
 The operation input and output remain open for the session. Ominipg multiplexes
 request, response, and event frames over those streams until `db.close()`.
 
-## Default private host
+## Default private topology
 
 No Oxian setup is required for the common case:
 
@@ -26,20 +26,32 @@ const db = await Ominipg.connect({
 });
 ```
 
-Internally, Ominipg creates one `WorkerHost`, attaches one `ominipg.session.v1`
-workload, and opens one session. Provider callbacks and non-serializable PGlite
-configuration stay process-local. `db.close()` owns all private cleanup.
+Internally, Ominipg creates one Hypervisor, binds one in-process Worker carrying
+the `ominipg.session.v1` workload, and opens one session. Provider callbacks and
+non-serializable PGlite configuration stay process-local. `db.close()` owns all
+private cleanup.
 
-The private host is event-loop local. It does not create a thread, isolate, or
-WebSocket.
+Each private session owns a unique event-fabric topic, so independently embedded
+libraries cannot collide. Frames are addressed to one logical connection; the
+topic is a rendezvous namespace, not a work-broadcast channel. Closing the
+session stops its Worker, unregisters the Hypervisor binding, and releases the
+topic.
 
-## Shared application host
+The private topology is event-loop local. It executes the complete Oxian v1
+lifecycle but does not create a thread, isolate, listener, or WebSocket. Because
+there is no intermediary socket lifetime, Oxian does not apply automatic
+connection-age rotation to this in-process path. A durable database session
+remains attached until `db.close()`, explicit Worker/Hypervisor shutdown, or a
+genuine lifecycle failure.
 
-Use a shared host when an application or higher-level library owns several
+## Shared application topology
+
+Use a shared Hypervisor when an application or higher-level library owns several
 worker-enabled capabilities:
 
 ```ts
-import { createWorkerHost } from "jsr:@oxian/oxian-js@0.20.0-rc.6/host";
+import { createHypervisor } from "jsr:@oxian/oxian-js@0.21.0-rc.4/hypervisor";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.4/worker";
 import {
   createOminipgWorkload,
   Ominipg,
@@ -47,12 +59,15 @@ import {
 } from "jsr:@oxian/ominipg";
 import { createPGliteProvider } from "jsr:@oxian/ominipg/pglite";
 
-const host = createWorkerHost({
-  persistAcceptance: () => Promise.resolve(),
-});
+const local = {
+  type: "in-process",
+  config: { topic: "embedded-application" },
+} as const;
+const hypervisor = createHypervisor({ transports: [local] });
 
-const worker = host.attachInProcessWorker({
-  workerId: "embedded-application",
+const worker = createWorker({
+  id: "embedded-application",
+  transport: local,
   capacity: 8,
   workloads: {
     [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
@@ -63,30 +78,31 @@ const worker = host.attachInProcessWorker({
     "application.turn.v1": applicationTurnWorkload,
   },
 });
+await worker.ready;
 
 const first = await Ominipg.connect({
   url: ":memory:",
-  oxian: { dispatcher: host },
+  oxian: { dispatcher: hypervisor },
 });
 const second = await Ominipg.connect({
   url: ":memory:",
-  oxian: { dispatcher: host },
+  oxian: { dispatcher: hypervisor },
 });
 
-await first.close(); // second and host remain alive
+await first.close(); // second and the shared topology remain alive
 await second.close();
 
-await worker.drain();
-await worker.shutdown();
-await host.shutdown();
+await worker.stop();
+await worker.closed;
+await hypervisor.shutdown();
 ```
 
-Every session still owns a separate engine. Sharing a host does not share PGlite
-instances, pools, sync metadata, or transactions.
+Every session still owns a separate engine. Sharing a Hypervisor or Worker does
+not share PGlite instances, pools, sync metadata, or transactions.
 
 This topology is suitable for embedding Ominipg in a library: the parent
-application can own one host and attach Ominipg alongside its other workloads.
-The library does not need to enable an HTTP server or Hypervisor.
+application can own one Hypervisor and bind Ominipg alongside its other
+workloads. The library does not need to enable an HTTP or WebSocket listener.
 
 ## Runtime-owned dependencies
 
@@ -117,7 +133,7 @@ createOminipgWorkload({
 const db = await Ominipg.connect({
   url: tenantDatabaseUrl,
   oxian: {
-    dispatcher: host,
+    dispatcher: hypervisor,
     metadata: { tenantId },
   },
 });
@@ -147,19 +163,22 @@ Node, Bun, or Cloudflare worker.
 worker:
 
 ```ts
-import { createWorkerClient } from "jsr:@oxian/oxian-js@0.20.0-rc.6/worker";
+import { createWorker } from "jsr:@oxian/oxian-js@0.21.0-rc.4/worker";
 import {
   createOminipgWorkload,
   OMINIPG_SESSION_WORKLOAD,
 } from "jsr:@oxian/ominipg/workload";
 
-const worker = createWorkerClient({
-  // Oxian URL, identity, credential, and persistence omitted here.
-  url: hypervisorWorkerUrl,
-  identity,
-  credential,
-  credentialPersistence: "durable",
-  persistResumeCredential,
+const worker = createWorker({
+  id: "database-worker",
+  transport: {
+    type: "websocket",
+    config: { url: hypervisorWorkerUrl },
+  },
+  activate: ({ workerId }) => attempts.activate(workerId),
+  register: ({ identity }) => credentials.issue(identity),
+  handshake: ({ rotation, bootstrap }) =>
+    workerState.persistRotationAndBootstrap(rotation, bootstrap),
   capacity: 8,
   workloads: {
     [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
@@ -168,7 +187,8 @@ const worker = createWorkerClient({
   },
 });
 
-await worker.run();
+await worker.ready;
+await worker.closed;
 ```
 
 The application process that owns an Oxian Hypervisor can pass it directly:
@@ -191,24 +211,31 @@ not expose that socket as a browser/client database protocol. A remote requester
 needs application ingress that authenticates it and dispatches through the
 owning Hypervisor.
 
+WebSocket connections still use the Hypervisor's configured age rotation. An
+application hosting long-lived remote Ominipg sessions must choose a connection
+lifetime and drain policy compatible with its infrastructure and database
+transaction limits; an in-flight stateful session cannot be replayed after its
+acceptance boundary.
+
 ## In-process versus WebSocket
 
-| Concern                         | In-process `WorkerHost` | Hypervisor + remote worker                 |
-| ------------------------------- | ----------------------- | ------------------------------------------ |
-| Socket/handshake                | None                    | WSS and Oxian handshake                    |
-| Ominipg session framing         | Yes                     | Yes                                        |
-| Oxian wire framing/credit       | None                    | Yes                                        |
-| Serialization                   | Ominipg values only     | Ominipg plus Oxian transport               |
-| Backpressure/cancellation       | Direct Web Streams      | Mapped to remote protocol                  |
-| Event-loop isolation            | No                      | Yes when worker is another process/isolate |
-| Memory/crash/security isolation | No                      | Deployment-dependent                       |
-| Reconnect/credentials           | None                    | Oxian worker lifecycle                     |
-| Relative overhead               | Lowest worker topology  | Higher, with isolation/routing             |
+| Concern                         | In-process event fabric              | WebSocket Worker                           |
+| ------------------------------- | ------------------------------------ | ------------------------------------------ |
+| Physical connection             | Same-realm addressed events          | WSS socket                                 |
+| Oxian handshake/lifecycle       | Complete `oxian.worker.v1` lifecycle | Complete `oxian.worker.v1` lifecycle       |
+| Ominipg session framing         | Yes                                  | Yes                                        |
+| Oxian framing/credit            | Yes, through the shared codec/kernel | Yes, through the shared codec/kernel       |
+| Backpressure/cancellation       | Credited Web Streams                 | Credited Web Streams                       |
+| Event-loop isolation            | No                                   | Yes when worker is another process/isolate |
+| Memory/crash/security isolation | No                                   | Deployment-dependent                       |
+| Network/TLS overhead            | None                                 | Deployment-dependent                       |
+| Relative overhead               | Lower physical transport cost        | Higher, with isolation/routing             |
 
-The in-process path is normally lighter than loopback WebSocket execution. It is
-not as cheap as calling the engine directly because Ominipg deliberately keeps
-the same stream protocol for every topology. That consistency lets an
-application move a workload out of process without rewriting its database API.
+The in-process path is normally lighter than loopback WebSocket execution. It
+still runs the same Oxian codec, lifecycle, protocol ordering, flow control, and
+Ominipg stream protocol. That consistency lets an application move a workload
+out of process without rewriting its database API or changing lifecycle
+semantics.
 
 ## Capacity and database concurrency
 
@@ -228,9 +255,10 @@ of long-lived sessions over one connection per request.
 - A transport `AbortSignal` cancels the whole session.
 - The workload closes subscriptions, sync services, active transactions, and
   database resources.
-- Private host cleanup follows session cleanup.
-- Shared hosts and Hypervisors are never shut down by `db.close()`.
-- Host owners should drain before shutdown so no new sessions are accepted.
+- Private Worker and Hypervisor cleanup follows session cleanup.
+- Injected dispatchers, Workers, and Hypervisors are never shut down by
+  `db.close()`.
+- Topology owners should stop Workers and then shut down the Hypervisor.
 
 JavaScript cancellation is cooperative. An in-process workload cannot forcibly
 interrupt arbitrary synchronous CPU work.

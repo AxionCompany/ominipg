@@ -1,13 +1,14 @@
-import type {
-  WorkerHostDispatchInput,
-  WorkerHostWorkHandle,
-} from "@oxian/oxian-js/host";
+import type { Dispatcher, WorkHandle, WorkInput } from "@oxian/oxian-js/work";
 import type {
   PgNotification,
   PgSubscription,
   PgSubscriptionState,
 } from "../client/types.ts";
-import { decodeSessionFrames, encodeSessionFrame } from "./codec.ts";
+import {
+  decodeSessionFrames,
+  encodeSessionFrame,
+  writeEncodedSessionFrame,
+} from "./codec.ts";
 import {
   OMINIPG_SESSION_PROTOCOL,
   OMINIPG_SESSION_WORKLOAD,
@@ -17,15 +18,13 @@ import {
   sessionRequest,
 } from "./protocol.ts";
 
-export type OminipgDispatcher = Readonly<{
-  dispatch(input: WorkerHostDispatchInput): Promise<WorkerHostWorkHandle>;
-}>;
+export type OminipgDispatcher = Dispatcher;
 
 export type OminipgSessionTransport = Readonly<{
   dispatcher: OminipgDispatcher;
   workload?: string;
-  target?: WorkerHostDispatchInput["target"];
-  metadata?: WorkerHostDispatchInput["metadata"];
+  target?: WorkInput["target"];
+  metadata?: WorkInput["metadata"];
   deadlineAtMs?: number;
   signal?: AbortSignal;
   /** Maximum incoming session frame size; defaults to 512 MiB. */
@@ -36,15 +35,25 @@ type PendingRequest = {
   resolve(value: unknown): void;
   reject(reason: unknown): void;
   timer: ReturnType<typeof setTimeout>;
+  timedOut: boolean;
 };
 
 type SessionClientOptions = Readonly<{
-  handle: WorkerHostWorkHandle;
+  handle: WorkHandle;
   input: WritableStreamDefaultWriter<Uint8Array>;
   onError(error: Error): void;
   onClose(): void | Promise<void>;
   maxFrameBytes?: number;
+  requestTimeoutMs?: number;
 }>;
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+function assertRequestTimeout(timeoutMs: number): void {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new TypeError("requestTimeoutMs must be a positive safe integer.");
+  }
+}
 
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
@@ -126,13 +135,17 @@ export class OminipgSessionClient {
   private requestId = 0;
   private subscriptionId = 0;
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly idleWaiters = new Set<() => void>();
   private readonly subscriptions = new Map<string, RemoteSubscription>();
-  private readonly handle: WorkerHostWorkHandle;
+  private readonly handle: WorkHandle;
   private readonly input: WritableStreamDefaultWriter<Uint8Array>;
   private readonly onError: (error: Error) => void;
   private readonly onClose: () => void | Promise<void>;
   private readonly maxFrameBytes?: number;
+  private readonly requestTimeoutMs: number;
   private readonly reading: Promise<void>;
+  private writeTail: Promise<void> = Promise.resolve();
+  private requestTail: Promise<void> = Promise.resolve();
   private closing = false;
   private closed = false;
 
@@ -142,6 +155,9 @@ export class OminipgSessionClient {
     this.onError = options.onError;
     this.onClose = options.onClose;
     this.maxFrameBytes = options.maxFrameBytes;
+    this.requestTimeoutMs = options.requestTimeoutMs ??
+      DEFAULT_REQUEST_TIMEOUT_MS;
+    assertRequestTimeout(this.requestTimeoutMs);
     this.reading = this.readOutput();
     // A transport failure is reported through onError immediately. Keep the
     // original promise for close(), but mark both lifecycle rejections handled
@@ -153,18 +169,40 @@ export class OminipgSessionClient {
   async request<T>(
     operation: OminipgSessionOperation,
     payload?: unknown,
-    timeoutMs = 30_000,
+    timeoutMs = this.requestTimeoutMs,
   ): Promise<T> {
+    assertRequestTimeout(timeoutMs);
     if (this.closed || this.closing && operation !== "close") {
       throw new Error("Ominipg session is closed.");
     }
+    const request = this.requestTail.then(
+      () => this.sendRequest<T>(operation, payload, timeoutMs),
+      () => this.sendRequest<T>(operation, payload, timeoutMs),
+    );
+    this.requestTail = request.then(
+      () => undefined,
+      async () => {
+        await this.whenIdle();
+      },
+    );
+    return await request;
+  }
+
+  private async sendRequest<T>(
+    operation: OminipgSessionOperation,
+    payload: unknown,
+    timeoutMs: number,
+  ): Promise<T> {
     const id = ++this.requestId;
     const response = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(
+        const pending = this.pending.get(id);
+        if (!pending || pending.timedOut) return;
+        pending.timedOut = true;
+        pending.reject(
           new Error(
-            `Ominipg '${operation}' request timed out after ${timeoutMs}ms.`,
+            `Ominipg '${operation}' request timed out after ${timeoutMs}ms; ` +
+              "the session will drain it before accepting more work.",
           ),
         );
       }, timeoutMs);
@@ -172,21 +210,29 @@ export class OminipgSessionClient {
         resolve: (value) => resolve(value as T),
         reject,
         timer,
+        timedOut: false,
       });
     });
+    const encoded = encodeSessionFrame(sessionRequest(id, operation, payload));
+    const write = this.writeTail.then(() =>
+      writeEncodedSessionFrame(this.input, encoded)
+    );
+    this.writeTail = write.catch(() => {});
     try {
-      await this.input.write(
-        encodeSessionFrame(sessionRequest(id, operation, payload)),
-      );
+      await write;
     } catch (error) {
-      const pending = this.pending.get(id);
-      if (pending) {
-        clearTimeout(pending.timer);
-        this.pending.delete(id);
+      const pending = this.takePending(id);
+      if (pending && !pending.timedOut) {
         pending.reject(error);
       }
     }
     return await response;
+  }
+
+  /** Resolves after every accepted request has produced a terminal response. */
+  whenIdle(): Promise<void> {
+    if (this.pending.size === 0) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.add(resolve));
   }
 
   async listen(
@@ -272,10 +318,9 @@ export class OminipgSessionClient {
       throw new TypeError("Unsupported Ominipg session protocol.");
     }
     if (frame.kind === "response") {
-      const pending = this.pending.get(frame.id);
+      const pending = this.takePending(frame.id);
       if (!pending) return;
-      clearTimeout(pending.timer);
-      this.pending.delete(frame.id);
+      if (pending.timedOut) return;
       if (frame.ok) {
         pending.resolve(frame.value);
       } else {
@@ -313,9 +358,25 @@ export class OminipgSessionClient {
   private rejectPending(error: Error): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(error);
+      if (!pending.timedOut) pending.reject(error);
     }
     this.pending.clear();
+    this.resolveIdle();
+  }
+
+  private takePending(id: number): PendingRequest | undefined {
+    const pending = this.pending.get(id);
+    if (!pending) return undefined;
+    clearTimeout(pending.timer);
+    this.pending.delete(id);
+    this.resolveIdle();
+    return pending;
+  }
+
+  private resolveIdle(): void {
+    if (this.pending.size > 0) return;
+    for (const resolve of this.idleWaiters) resolve();
+    this.idleWaiters.clear();
   }
 
   private async finish(): Promise<void> {
@@ -339,11 +400,12 @@ export async function openOminipgSession(
   hooks: Readonly<{
     onError(error: Error): void;
     onClose(): void | Promise<void>;
+    requestTimeoutMs?: number;
   }>,
 ): Promise<OminipgSessionClient> {
   const input = new TransformStream<Uint8Array, Uint8Array>();
   const writer = input.writable.getWriter();
-  let handle: WorkerHostWorkHandle | undefined;
+  let handle: WorkHandle | undefined;
   try {
     handle = await transport.dispatcher.dispatch({
       workload: transport.workload ?? OMINIPG_SESSION_WORKLOAD,
@@ -375,5 +437,6 @@ export async function openOminipgSession(
     onError: hooks.onError,
     onClose: hooks.onClose,
     maxFrameBytes: transport.maxFrameBytes,
+    requestTimeoutMs: hooks.requestTimeoutMs,
   });
 }

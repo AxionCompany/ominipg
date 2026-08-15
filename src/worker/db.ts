@@ -40,8 +40,8 @@ export type EngineDependencies = Readonly<{
 /**
  * All mutable state owned by one Ominipg workload session.
  *
- * Keeping this state explicit is what allows multiple embedded WorkerHosts (or
- * multiple sessions on one shared host) to coexist in the same isolate.
+ * Keeping this state explicit is what allows multiple embedded Workers (or
+ * multiple sessions on one shared Hypervisor) to coexist in the same isolate.
  */
 export interface EngineState {
   mainDb?: DatabaseClient;
@@ -582,9 +582,16 @@ async function initializePostgreSQL(
   url: string,
   provider?: PgProvider,
   max = 5,
+  statementTimeoutMs?: number,
 ): Promise<PostgresAdapter> {
   const pg = await loadPgModule(provider);
-  const pool = new pg.Pool({ connectionString: url, max });
+  const pool = new pg.Pool({
+    connectionString: url,
+    max,
+    ...(statementTimeoutMs === undefined
+      ? {}
+      : { statement_timeout: statementTimeoutMs }),
+  });
   const client = await pool.connect();
   try {
     await client.query("SELECT 1"); // Test connection
@@ -622,6 +629,7 @@ export async function initConnections(
       cfg.url,
       state.pgProvider,
       cfg.pgPoolMax ?? 5,
+      cfg.statementTimeoutMs,
     );
     state.mainDb = adapter;
     state.mainPool = adapter.pool;

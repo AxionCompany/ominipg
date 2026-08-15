@@ -79,7 +79,11 @@ export interface PgPool {
 }
 
 export interface PgModule {
-  Pool: new (options: { connectionString: string; max?: number }) => PgPool;
+  Pool: new (options: {
+    connectionString: string;
+    max?: number;
+    statement_timeout?: number;
+  }) => PgPool;
 }
 
 export interface LogicalReplicationServiceLike {
@@ -130,5 +134,6 @@ export interface OminipgEngineConfig {
   pgliteProvider?: PGliteProvider;
   pgProvider?: PgProvider;
   pgPoolMax?: number;
+  statementTimeoutMs?: number;
   logMetrics?: boolean;
 }

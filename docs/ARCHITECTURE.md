@@ -18,9 +18,11 @@ flowchart LR
   SC --> D{"Oxian dispatcher"}
 
   subgraph Embedded["Embedded topology — same isolate"]
-    H["WorkerHost"]
+    H["Hypervisor"]
+    W["Worker\ntransport: in-process"]
     IW["In-process workload"]
-    H --> IW
+    H <-->|"addressed event fabric / oxian.worker.v1"| W
+    W --> IW
   end
 
   subgraph Routed["Routed topology"]
@@ -64,13 +66,14 @@ and call the same `Ominipg.query()` method as raw callers.
 - a monotonically increasing request ID correlates responses;
 - multiple request promises share one input/output byte stream;
 - notification and subscription-state frames are delivered as events;
-- request timeouts reject the caller;
+- request timeouts reject the caller, while the session drains the accepted
+  operation before admitting the next one;
 - closing rejects pending requests and closes subscriptions;
 - injected dispatchers remain owned by the embedding application.
 
-The accepted dispatcher shape is structural. Oxian `WorkerHost` and `Hypervisor`
-both expose the required `dispatch()` lifecycle. An application can also provide
-an adapter with the same contract.
+The accepted dispatcher shape is the minimal Oxian `Dispatcher` contract.
+Hypervisors expose that contract directly, and an application can provide
+another adapter with the same lifecycle.
 
 ### Ominipg session protocol
 
@@ -162,23 +165,25 @@ host capabilities such as RSS measurement are injected.
 
 ### Private embedded — default
 
-When `oxian` is absent, Ominipg creates a private `WorkerHost`, attaches one
-in-process workload with capacity one, and dispatches the session to it.
-`db.close()` closes the engine, worker, and host.
+When `oxian` is absent, Ominipg creates a private Hypervisor and an in-process
+Worker carrying one workload with capacity one, then dispatches the session
+through the Hypervisor. `db.close()` closes the engine, Worker, and Hypervisor.
 
-This path stays inside one JavaScript isolate. Oxian passes Web Streams
-directly; there is no WebSocket handshake, wire protocol, reconnect loop, Web
-Worker, or worker thread.
+This path stays inside one JavaScript isolate. Oxian carries encoded control and
+binary frames through an addressed event fabric and runs the same handshake,
+readiness, heartbeat, lease, acceptance, credit, cancellation, drain, and
+shutdown state machines as WebSocket Workers. It creates no socket, Web Worker,
+worker thread, or runtime isolate.
 
 ### Shared embedded
 
-An application can attach `createOminipgWorkload()` to its own `WorkerHost` and
-pass that host as `oxian.dispatcher`. Multiple database sessions can share the
-host while retaining separate engines. `db.close()` closes only its session; the
-application drains or shuts down the shared worker and host.
+An application can place a Worker carrying `createOminipgWorkload()` on its own
+Hypervisor and pass that Hypervisor as `oxian.dispatcher`. Multiple database
+sessions can share the topology while retaining separate engines. `db.close()`
+closes only its session; the application owns the shared Worker and Hypervisor.
 
 This is the intended embedding model for a library such as Copilotz: Copilotz
-can expose worker-enabled functionality without owning a server or Hypervisor.
+can expose worker-enabled functionality without opening a server or WebSocket.
 
 ### Hypervisor-routed
 
@@ -223,8 +228,9 @@ checks out a pool client on `BEGIN` and retains it for every session query until
 the transaction ends. Closing an engine with an active transaction attempts a
 rollback before releasing the connection.
 
-A transaction is session-scoped, not an application-wide lock. Avoid unrelated
-concurrent calls on the same client during its callback.
+A transaction is session-scoped, not an application-wide lock. The client owns
+an exclusive operation lane for the entire callback, so unrelated concurrent
+calls on the same instance wait until commit or rollback.
 
 ### Sync
 
@@ -274,8 +280,8 @@ driver and network model.
   sync state naturally.
 - Explicit providers keep runtime-specific imports out of the core and make
   worker runtime ownership visible.
-- An injected host or Hypervisor always outlives individual Ominipg sessions
-  unless its application owner shuts it down.
+- An injected dispatcher or Hypervisor always outlives individual Ominipg
+  sessions unless its application owner shuts it down.
 
 ## Related documentation
 

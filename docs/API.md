@@ -169,6 +169,8 @@ interface OminipgConnectionOptions {
   pgliteProvider?: PGliteProvider;
   pgProvider?: PgProvider;
   pgPoolMax?: number;
+  requestTimeoutMs?: number;
+  statementTimeoutMs?: number | null;
   oxian?: OminipgSessionTransport;
   runtime?: { getRssMb?: () => number | null };
   /** @deprecated Accepted as a no-op. */
@@ -185,6 +187,14 @@ type PGliteConfig = {
   [key: string]: unknown;
 };
 ```
+
+`requestTimeoutMs` defaults to 30 seconds and controls how long the client waits
+for an ordinary workload request, including a SQL query. PostgreSQL sessions
+default `statementTimeoutMs` to one second less, giving the server time to
+cancel a slow statement and return the connection to a usable state before the
+client deadline. Set `statementTimeoutMs: null` only when server-side statement
+timeouts must be disabled. Migration and analytical sessions should raise both
+deadlines consistently.
 
 ### Properties
 
@@ -238,9 +248,9 @@ syncUrl: "postgresql://user:pass@myserver.com:5432/prod_db";
 #### `oxian` (optional)
 
 - **Type:** `OminipgSessionTransport`
-- **Default:** A private embedded `WorkerHost`
-- **Description:** Supplies a shared `WorkerHost`, Hypervisor, or structurally
-  compatible dispatcher.
+- **Default:** A private Hypervisor with one in-process Worker
+- **Description:** Supplies an application-owned Hypervisor or another
+  structurally compatible dispatcher.
 
 ```ts
 type OminipgSessionTransport = Readonly<{
@@ -388,12 +398,15 @@ commit fails.
 
 ```ts
 async transaction<T>(
-  callback: (transaction: Ominipg) => T | Promise<T>,
+  callback: (transaction: OminipgTransaction) => T | Promise<T>,
 ): Promise<T>
 ```
 
-PostgreSQL execution pins one pool client for the transaction. Avoid unrelated
-concurrent queries on the same `Ominipg` instance during the callback.
+PostgreSQL execution pins one pool client for the transaction. Concurrent
+operations on the same `Ominipg` instance wait until the callback commits or
+rolls back. The transaction view exposes `query()` and `queryRaw()`. Use that
+view for transaction queries; awaiting parent-instance operations from inside
+the callback would wait for the callback itself to settle.
 
 ```ts
 const result = await db.transaction(async (tx) => {
@@ -587,8 +600,8 @@ await db.close();
 - Emits `"close"` event when connection is closed
 
 For a private embedded session, `close()` also shuts down its private Oxian
-worker and host. For an injected dispatcher it closes only the database session;
-the embedding application owns host/Hypervisor shutdown.
+Worker and Hypervisor. For an injected dispatcher it closes only the database
+session; the embedding application owns Worker/Hypervisor shutdown.
 
 ---
 
@@ -860,6 +873,7 @@ interface OminipgConnectionOptions {
   pgliteProvider?: PGliteProvider;
   pgProvider?: PgProvider;
   pgPoolMax?: number;
+  requestTimeoutMs?: number;
   oxian?: OminipgSessionTransport;
   useWorker?: boolean; // deprecated no-op
   schemas?: CrudSchemas;

@@ -106,6 +106,12 @@ function describePgProvider(
   return Object.keys(descriptor).length > 0 ? descriptor : undefined;
 }
 
+function defaultStatementTimeout(requestTimeoutMs: number): number {
+  return requestTimeoutMs > 1_000
+    ? requestTimeoutMs - 1_000
+    : Math.max(1, requestTimeoutMs - 1);
+}
+
 /**
  * Ominipg instance with CRUD API attached.
  *
@@ -127,14 +133,32 @@ export type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
 };
 
 /**
+ * Query surface scoped to one Ominipg transaction.
+ *
+ * The transaction view intentionally exposes only SQL operations. Lifecycle,
+ * synchronization, and subscription operations remain owned by the parent
+ * database instance and are queued until the transaction settles.
+ */
+export type OminipgTransaction = Readonly<{
+  query<TRow extends Record<string, unknown> = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: TRow[] }>;
+  queryRaw<TRow extends Record<string, unknown> = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: TRow[] }>;
+}>;
+
+/**
  * Main Ominipg database client class.
  *
  * Provides a unified interface for working with PostgreSQL databases across
  * standards-compatible JavaScript runtimes:
  * - **In-memory**: Using PGlite (PostgreSQL in WASM)
  * - **Persistent**: File-based PGlite storage
- * - **Embedded**: An in-process Oxian WorkerHost in the current isolate
- * - **Routed**: A shared WorkerHost or Hypervisor-backed Oxian dispatcher
+ * - **Embedded**: A private Hypervisor and in-process Worker in this isolate
+ * - **Routed**: An application-owned Oxian dispatcher targeting shared workers
  *
  * The class extends TypedEmitter to provide event-based notifications for
  * connection, sync, and error events.
@@ -162,6 +186,9 @@ export type OminipgWithCrud<Schemas extends CrudSchemas> = Ominipg & {
  */
 export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   private readonly session: OminipgSessionClient;
+  private operationTail: Promise<void> = Promise.resolve();
+  private closePromise?: Promise<void>;
+  private closing = false;
   private closed = false;
   public crud?: unknown;
 
@@ -242,17 +269,42 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   ): Promise<Ominipg | OminipgWithCrud<S>> {
     const url = options.url || `:memory:`;
     const pgPoolMax = options.pgPoolMax ?? 5;
+    const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    const statementTimeoutMs = options.statementTimeoutMs === null
+      ? undefined
+      : options.statementTimeoutMs ?? defaultStatementTimeout(requestTimeoutMs);
 
     if (!Number.isSafeInteger(pgPoolMax) || pgPoolMax < 1) {
       throw new Error("pgPoolMax must be a positive integer.");
     }
+    if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
+      throw new TypeError("requestTimeoutMs must be a positive safe integer.");
+    }
+    if (
+      statementTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(statementTimeoutMs) || statementTimeoutMs < 1)
+    ) {
+      throw new TypeError(
+        "statementTimeoutMs must be null or a positive safe integer.",
+      );
+    }
+    if (
+      statementTimeoutMs !== undefined &&
+      statementTimeoutMs >= requestTimeoutMs && requestTimeoutMs > 1
+    ) {
+      throw new TypeError(
+        "statementTimeoutMs must be shorter than requestTimeoutMs.",
+      );
+    }
 
-    const embedded = options.oxian ? undefined : createEmbeddedOminipgSession({
-      pgliteProvider: options.pgliteProvider,
-      pgProvider: options.pgProvider,
-      pgliteConfig: options.pgliteConfig,
-      getRssMb: options.runtime?.getRssMb,
-    });
+    const embedded = options.oxian
+      ? undefined
+      : await createEmbeddedOminipgSession({
+        pgliteProvider: options.pgliteProvider,
+        pgProvider: options.pgProvider,
+        pgliteConfig: options.pgliteConfig,
+        getRssMb: options.runtime?.getRssMb,
+      });
     const clientRef: { current?: Ominipg } = {};
     let session: OminipgSessionClient;
     try {
@@ -263,6 +315,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
             clientRef.current?.emit("error", error);
           },
           onClose: () => embedded?.close(),
+          requestTimeoutMs,
         },
       );
     } catch (error) {
@@ -276,6 +329,8 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       schemas: _schemas,
       oxian: _oxian,
       runtime: _runtime,
+      requestTimeoutMs: _requestTimeoutMs,
+      statementTimeoutMs: _statementTimeoutMs,
       useWorker: _legacyUseWorker,
       pgliteProvider: _pgliteProvider,
       pgProvider: _pgProvider,
@@ -288,6 +343,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       ...wireOptions,
       url,
       pgPoolMax,
+      ...(statementTimeoutMs === undefined ? {} : { statementTimeoutMs }),
       // Arbitrary PGlite configuration remains process-local for embedded
       // sessions. Routed workers receive only values that cross the byte stream.
       ...(options.oxian && pgliteConfig ? { pgliteConfig } : {}),
@@ -348,11 +404,8 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   public async query<
     TRow extends Record<string, unknown> = Record<string, unknown>,
   >(sql: string, params?: unknown[]): Promise<{ rows: TRow[] }> {
-    if (this.closed) throw new Error("Ominipg instance is closed.");
-    return await this.session.request<{ rows: TRow[] }>("query", {
-      sql,
-      params,
-    });
+    this.assertOpen();
+    return await this.runExclusive(() => this.queryInLane<TRow>(sql, params));
   }
 
   /**
@@ -376,22 +429,35 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * Queries are serialized on the same PGlite engine or PostgreSQL connection.
    */
   public async transaction<T>(
-    callback: (transaction: Ominipg) => T | Promise<T>,
+    callback: (transaction: OminipgTransaction) => T | Promise<T>,
   ): Promise<T> {
-    if (this.closed) throw new Error("Ominipg instance is closed.");
-    await this.query("BEGIN");
-    try {
-      const result = await callback(this);
-      await this.query("COMMIT");
-      return result;
-    } catch (error) {
+    this.assertOpen();
+    return await this.runExclusive(async () => {
+      const transaction: OminipgTransaction = {
+        query: <TRow extends Record<string, unknown> = Record<string, unknown>>(
+          sql: string,
+          params?: unknown[],
+        ) => this.queryInLane<TRow>(sql, params),
+        queryRaw: <
+          TRow extends Record<string, unknown> = Record<string, unknown>,
+        >(sql: string, params?: unknown[]) =>
+          this.queryInLane<TRow>(sql, params),
+      };
+      await this.queryInLane("BEGIN");
       try {
-        await this.query("ROLLBACK");
-      } catch {
-        // Preserve the callback/commit failure as the primary error.
+        const result = await callback(transaction);
+        await this.queryInLane("COMMIT");
+        return result;
+      } catch (error) {
+        await this.session.whenIdle();
+        try {
+          await this.queryInLane("ROLLBACK");
+        } catch {
+          // Preserve the callback/commit failure as the primary error.
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 
   /**
@@ -404,16 +470,18 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     channel: string,
     handler: (notification: PgNotification) => void,
   ): Promise<PgSubscription> {
-    if (this.closed) throw new Error("Ominipg instance is closed.");
+    this.assertOpen();
     validateNotificationChannel(channel);
     return await this.session.listen(channel, handler);
   }
 
   /** Sends a PostgreSQL notification using parameterized `pg_notify`. */
   public async notify(channel: string, payload = ""): Promise<void> {
-    if (this.closed) throw new Error("Ominipg instance is closed.");
+    this.assertOpen();
     validateNotificationChannel(channel);
-    await this.session.request("notify", { channel, payload });
+    await this.runExclusive(() =>
+      this.session.request("notify", { channel, payload })
+    );
   }
 
   /**
@@ -443,13 +511,15 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * ```
    */
   public async sync(): Promise<{ pushed: number }> {
-    if (this.closed) throw new Error("Ominipg instance is closed.");
-    this.emit("sync:start");
-    const result = await this.session.request<{ pushed: number }>(
-      "sync",
-      undefined,
-      120000,
-    );
+    this.assertOpen();
+    const result = await this.runExclusive(async () => {
+      this.emit("sync:start");
+      return await this.session.request<{ pushed: number }>(
+        "sync",
+        undefined,
+        120000,
+      );
+    });
     this.emit("sync:end", result);
     return result;
   }
@@ -478,11 +548,13 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * ```
    */
   public async syncSequences(): Promise<{ synced: number }> {
-    if (this.closed) throw new Error("Ominipg instance is closed.");
-    return await this.session.request<{ synced: number }>(
-      "sync-sequences",
-      undefined,
-      120000,
+    this.assertOpen();
+    return await this.runExclusive(() =>
+      this.session.request<{ synced: number }>(
+        "sync-sequences",
+        undefined,
+        120000,
+      )
     );
   }
 
@@ -493,11 +565,13 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * database in a later process. This is only available for PGlite connections.
    */
   public async dumpDataDir(): Promise<Blob> {
-    if (this.closed) throw new Error("Ominipg instance is closed.");
-    const { dataDirBytes, dataDirType } = await this.session.request<{
-      dataDirBytes: Uint8Array;
-      dataDirType?: string;
-    }>("dump-data-dir", undefined, 120000);
+    this.assertOpen();
+    const { dataDirBytes, dataDirType } = await this.runExclusive(() =>
+      this.session.request<{
+        dataDirBytes: Uint8Array;
+        dataDirType?: string;
+      }>("dump-data-dir", undefined, 120000)
+    );
     const bytes = dataDirBytes;
     const buffer = bytes.buffer instanceof ArrayBuffer &&
         bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
@@ -522,10 +596,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * ```
    */
   public async getDiagnosticInfo(): Promise<Record<string, unknown>> {
-    if (this.closed) throw new Error("Ominipg instance is closed.");
-    const { info } = await this.session.request<
-      { info: Record<string, unknown> }
-    >("diagnostics");
+    this.assertOpen();
+    const { info } = await this.runExclusive(() =>
+      this.session.request<{ info: Record<string, unknown> }>("diagnostics")
+    );
     return info;
   }
 
@@ -548,9 +622,41 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    */
   public async close(): Promise<void> {
     if (this.closed) return;
-    this.closed = true;
-    await this.session.close();
-    this.emit("close");
+    if (this.closePromise) return await this.closePromise;
+    this.closing = true;
+    this.closePromise = this.runExclusive(async () => {
+      try {
+        await this.session.close();
+      } finally {
+        this.closed = true;
+        this.emit("close");
+      }
+    });
+    return await this.closePromise;
+  }
+
+  private assertOpen(): void {
+    if (this.closed || this.closing) {
+      throw new Error("Ominipg instance is closed.");
+    }
+  }
+
+  private async queryInLane<
+    TRow extends Record<string, unknown> = Record<string, unknown>,
+  >(sql: string, params?: unknown[]): Promise<{ rows: TRow[] }> {
+    return await this.session.request<{ rows: TRow[] }>("query", {
+      sql,
+      params,
+    });
+  }
+
+  private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operationTail.then(operation, operation);
+    this.operationTail = result.then(
+      () => this.session.whenIdle(),
+      () => this.session.whenIdle(),
+    );
+    return result;
   }
 
   private attachCrud<S extends CrudSchemas>(schemas: S): CrudApi<S> {
@@ -600,7 +706,7 @@ export type OminipgDrizzleMixin = {
   ) => Promise<{ rows: TRow[] }>;
   /** Run a callback in one workload-scoped transaction. */
   transaction: <T>(
-    callback: (transaction: Ominipg) => T | Promise<T>,
+    callback: (transaction: OminipgTransaction) => T | Promise<T>,
   ) => Promise<T>;
   /** Access to the underlying Ominipg instance */
   _ominipg: Ominipg;

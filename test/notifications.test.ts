@@ -53,10 +53,18 @@ class FakeClient {
 class FakePool implements PgPool {
   static latest?: FakePool;
   readonly clients: FakeClient[] = [];
-  readonly options: { connectionString?: string; max?: number };
+  readonly options: {
+    connectionString?: string;
+    max?: number;
+    statement_timeout?: number;
+  };
   ended = false;
 
-  constructor(options: { connectionString: string; max?: number }) {
+  constructor(options: {
+    connectionString: string;
+    max?: number;
+    statement_timeout?: number;
+  }) {
     this.options = options;
     FakePool.latest = this;
   }
@@ -89,6 +97,31 @@ const provider = {
 
 const delay = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+Deno.test("PostgreSQL statements expire before the session request deadline", async () => {
+  const db = await Ominipg.connect({
+    url: "postgresql://test/test",
+    pgProvider: provider,
+    requestTimeoutMs: 5_000,
+  });
+  try {
+    assertEquals(FakePool.latest?.options.statement_timeout, 4_000);
+  } finally {
+    await db.close();
+  }
+
+  const unbounded = await Ominipg.connect({
+    url: "postgresql://test/test",
+    pgProvider: provider,
+    requestTimeoutMs: 5_000,
+    statementTimeoutMs: null,
+  });
+  try {
+    assertEquals(FakePool.latest?.options.statement_timeout, undefined);
+  } finally {
+    await unbounded.close();
+  }
+});
 
 Deno.test("PostgreSQL transactions pin one pool client per session", async () => {
   const db = await Ominipg.connect({
