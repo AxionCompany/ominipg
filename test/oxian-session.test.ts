@@ -511,3 +511,130 @@ Deno.test("one shared Hypervisor carries multiple independent Ominipg sessions",
     await hypervisor.shutdown();
   }
 });
+
+Deno.test("a lost post-start session rejects pending work once without an unhandled rejection", async () => {
+  let markQueryStarted!: () => void;
+  const queryStarted = new Promise<void>((resolve) => {
+    markQueryStarted = resolve;
+  });
+  let keepQueryOpen!: () => void;
+  const queryMayFinish = new Promise<void>((resolve) => {
+    keepQueryOpen = resolve;
+  });
+  const provider = {
+    loadPGlite: () =>
+      Promise.resolve({
+        PGlite: class {
+          async query() {
+            markQueryStarted();
+            await queryMayFinish;
+            return { rows: [{ value: "unreachable" }] };
+          }
+          exec() {
+            return Promise.resolve();
+          }
+          listen() {
+            return Promise.resolve();
+          }
+          close() {
+            return Promise.resolve();
+          }
+        },
+      }),
+  };
+  const declaration = {
+    type: "in-process",
+    config: { topic: `ominipg-session-loss:${crypto.randomUUID()}` },
+  } as const;
+  const hypervisor = createHypervisor({ transports: [declaration] });
+  const worker = createWorker({
+    id: "ominipg-session-loss-worker",
+    transport: declaration,
+    workloads: {
+      [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
+        dependencies: { pgliteProvider: provider },
+      }),
+    },
+    capacity: 1,
+  });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (event: PromiseRejectionEvent) => {
+    unhandled.push(event.reason);
+    event.preventDefault();
+  };
+  globalThis.addEventListener("unhandledrejection", onUnhandled);
+
+  let db: Ominipg | undefined;
+  try {
+    await worker.ready;
+    db = await Ominipg.connect({
+      url: ":memory:",
+      oxian: { dispatcher: hypervisor },
+      pgliteProvider: provider,
+    });
+    const errors: Error[] = [];
+    db.on("error", (error) => errors.push(error));
+
+    const pending = db.query("SELECT blocked");
+    // This is the caller-owned promise under test. Observe its expected
+    // rejection before yielding so this test detects only background session
+    // lifecycle rejections that Ominipg itself must handle.
+    void pending.catch(() => {});
+    await queryStarted;
+    const stop = worker.stop("test_session_lost");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    keepQueryOpen();
+    await stop;
+
+    const error = await assertRejects(() => pending, Error);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assertEquals(errors.length, 1);
+    assertEquals(errors[0], error);
+    assertEquals(error.name, "HypervisorError");
+    assertEquals((error as { code?: unknown }).code, "indeterminate");
+    assertEquals(unhandled, []);
+    await db.close();
+  } finally {
+    keepQueryOpen?.();
+    globalThis.removeEventListener("unhandledrejection", onUnhandled);
+    await db?.close().catch(() => {});
+    await worker.stop().catch(() => {});
+    await worker.closed.catch(() => {});
+    await hypervisor.shutdown().catch(() => {});
+  }
+
+  const recoveredDeclaration = {
+    type: "in-process",
+    config: { topic: `ominipg-session-recovered:${crypto.randomUUID()}` },
+  } as const;
+  const recoveredHypervisor = createHypervisor({
+    transports: [recoveredDeclaration],
+  });
+  const recoveredWorker = createWorker({
+    id: "ominipg-session-recovered-worker",
+    transport: recoveredDeclaration,
+    workloads: {
+      [OMINIPG_SESSION_WORKLOAD]: createOminipgWorkload({
+        dependencies: { pgliteProvider: delayedPGliteProvider(0) },
+      }),
+    },
+    capacity: 1,
+  });
+  let recovered: Ominipg | undefined;
+  try {
+    await recoveredWorker.ready;
+    recovered = await Ominipg.connect({
+      url: ":memory:",
+      oxian: { dispatcher: recoveredHypervisor },
+      pgliteProvider: delayedPGliteProvider(0),
+    });
+    assertEquals((await recovered.query("SELECT recovered")).rows, [
+      { value: "delayed" },
+    ]);
+  } finally {
+    await recovered?.close().catch(() => {});
+    await recoveredWorker.stop().catch(() => {});
+    await recoveredWorker.closed.catch(() => {});
+    await recoveredHypervisor.shutdown().catch(() => {});
+  }
+});
