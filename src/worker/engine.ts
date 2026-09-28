@@ -55,9 +55,25 @@ export class OminipgEngine {
     }
   }
 
-  async query(sql: string, params?: unknown[]): Promise<unknown[]> {
+  /**
+   * Whether queries may run concurrently. PostgreSQL uses a pool; PGlite is
+   * one connection, so its client keeps submitting one operation at a time.
+   */
+  get concurrent(): boolean {
+    return this.initialized && this.state.mainDbType === "postgres";
+  }
+
+  /**
+   * Runs one statement. A `transaction` lane pins every statement from its
+   * BEGIN through COMMIT or ROLLBACK to one connection.
+   */
+  async query(
+    sql: string,
+    params?: unknown[],
+    transaction?: string,
+  ): Promise<unknown[]> {
     this.assertReady();
-    return await exec(this.state, sql, params);
+    return await exec(this.state, sql, params, transaction);
   }
 
   async sync(): Promise<number> {

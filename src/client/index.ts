@@ -187,6 +187,9 @@ export type OminipgTransaction = Readonly<{
 export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   private readonly session: OminipgSessionClient;
   private operationTail: Promise<void> = Promise.resolve();
+  /** Set when the workload runs queries concurrently (PostgreSQL pools). */
+  private concurrent = false;
+  private readonly concurrentOperations = new Set<Promise<void>>();
   private closePromise?: Promise<void>;
   private closing = false;
   private closed = false;
@@ -352,7 +355,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     };
 
     try {
-      await session.request<void>("initialize", initConfig, 60_000);
+      const initialized = await session.request<
+        { concurrent?: boolean } | undefined
+      >("initialize", initConfig, 60_000);
+      db.concurrent = initialized?.concurrent === true;
     } catch (error) {
       await session.close().catch(() => {});
       throw error;
@@ -405,7 +411,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     TRow extends Record<string, unknown> = Record<string, unknown>,
   >(sql: string, params?: unknown[]): Promise<{ rows: TRow[] }> {
     this.assertOpen();
-    return await this.runExclusive(() => this.queryInLane<TRow>(sql, params));
+    return await this.run(() => this.queryInLane<TRow>(sql, params));
   }
 
   /**
@@ -426,12 +432,17 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
   /**
    * Runs a callback in a transaction pinned to this workload session.
-   * Queries are serialized on the same PGlite engine or PostgreSQL connection.
+   * On PostgreSQL each transaction pins its own pooled connection and runs
+   * alongside other queries and transactions. On PGlite, operations are
+   * serialized on its single engine.
    */
   public async transaction<T>(
     callback: (transaction: OminipgTransaction) => T | Promise<T>,
   ): Promise<T> {
     this.assertOpen();
+    if (this.concurrent) {
+      return await this.runConcurrent(() => this.laneTransaction(callback));
+    }
     return await this.runExclusive(async () => {
       const transaction: OminipgTransaction = {
         query: <TRow extends Record<string, unknown> = Record<string, unknown>>(
@@ -479,9 +490,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   public async notify(channel: string, payload = ""): Promise<void> {
     this.assertOpen();
     validateNotificationChannel(channel);
-    await this.runExclusive(() =>
-      this.session.request("notify", { channel, payload })
-    );
+    await this.run(() => this.session.request("notify", { channel, payload }));
   }
 
   /**
@@ -512,7 +521,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    */
   public async sync(): Promise<{ pushed: number }> {
     this.assertOpen();
-    const result = await this.runExclusive(async () => {
+    const result = await this.run(async () => {
       this.emit("sync:start");
       return await this.session.request<{ pushed: number }>(
         "sync",
@@ -549,7 +558,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    */
   public async syncSequences(): Promise<{ synced: number }> {
     this.assertOpen();
-    return await this.runExclusive(() =>
+    return await this.run(() =>
       this.session.request<{ synced: number }>(
         "sync-sequences",
         undefined,
@@ -566,7 +575,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    */
   public async dumpDataDir(): Promise<Blob> {
     this.assertOpen();
-    const { dataDirBytes, dataDirType } = await this.runExclusive(() =>
+    const { dataDirBytes, dataDirType } = await this.run(() =>
       this.session.request<{
         dataDirBytes: Uint8Array;
         dataDirType?: string;
@@ -597,7 +606,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    */
   public async getDiagnosticInfo(): Promise<Record<string, unknown>> {
     this.assertOpen();
-    const { info } = await this.runExclusive(() =>
+    const { info } = await this.run(() =>
       this.session.request<{ info: Record<string, unknown> }>("diagnostics")
     );
     return info;
@@ -641,17 +650,67 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     }
   }
 
+  private async laneTransaction<T>(
+    callback: (transaction: OminipgTransaction) => T | Promise<T>,
+  ): Promise<T> {
+    const lane = crypto.randomUUID();
+    const query = <TRow extends Record<string, unknown>>(
+      sql: string,
+      params?: unknown[],
+    ) => this.queryInLane<TRow>(sql, params, lane);
+    const transaction: OminipgTransaction = { query, queryRaw: query };
+    await this.queryInLane("BEGIN", undefined, lane);
+    try {
+      const result = await callback(transaction);
+      await this.queryInLane("COMMIT", undefined, lane);
+      return result;
+    } catch (error) {
+      // The workload runs a lane in order, so ROLLBACK follows any statement
+      // the callback left in flight.
+      try {
+        await this.queryInLane("ROLLBACK", undefined, lane);
+      } catch {
+        // Preserve the callback/commit failure as the primary error.
+      }
+      throw error;
+    }
+  }
+
   private async queryInLane<
     TRow extends Record<string, unknown> = Record<string, unknown>,
-  >(sql: string, params?: unknown[]): Promise<{ rows: TRow[] }> {
+  >(
+    sql: string,
+    params?: unknown[],
+    transaction?: string,
+  ): Promise<{ rows: TRow[] }> {
     return await this.session.request<{ rows: TRow[] }>("query", {
       sql,
       params,
+      ...(transaction === undefined ? {} : { transaction }),
     });
   }
 
+  /** Serializes operations only when the workload runs one at a time. */
+  private run<T>(operation: () => Promise<T>): Promise<T> {
+    return this.concurrent
+      ? this.runConcurrent(operation)
+      : this.runExclusive(operation);
+  }
+
+  /** Starts after queued exclusive operations, without blocking its peers. */
+  private runConcurrent<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operationTail.then(operation);
+    const settled = result.then(() => {}, () => {});
+    this.concurrentOperations.add(settled);
+    void settled.then(() => this.concurrentOperations.delete(settled));
+    return result;
+  }
+
+  /** Waits for every earlier operation, then runs alone. */
   private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.operationTail.then(operation, operation);
+    const result = this.operationTail
+      .then(() => Promise.allSettled([...this.concurrentOperations]))
+      .then(operation);
     this.operationTail = result.then(
       () => this.session.whenIdle(),
       () => this.session.whenIdle(),

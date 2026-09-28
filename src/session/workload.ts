@@ -91,6 +91,14 @@ function recordPayload(
   return request.payload as Record<string, unknown>;
 }
 
+function requestLane(request: OminipgSessionRequest): string | undefined {
+  if (request.operation !== "query") return undefined;
+  const payload = request.payload as Record<string, unknown> | undefined;
+  return typeof payload?.transaction === "string"
+    ? payload.transaction
+    : undefined;
+}
+
 async function executeRequest(
   engine: OminipgEngine,
   sink: FrameSink,
@@ -103,7 +111,9 @@ async function executeRequest(
         throw new TypeError("Ominipg initialize requires a string url.");
       }
       await engine.initialize(config);
-      return undefined;
+      // Clients send concurrent queries, with transactions on their own
+      // lanes, only after this workload reports that it can execute them.
+      return { concurrent: engine.concurrent };
     }
     case "query": {
       const payload = recordPayload(request);
@@ -113,8 +123,18 @@ async function executeRequest(
       if (payload.params !== undefined && !Array.isArray(payload.params)) {
         throw new TypeError("Ominipg query params must be an array.");
       }
+      if (
+        payload.transaction !== undefined &&
+        typeof payload.transaction !== "string"
+      ) {
+        throw new TypeError("Ominipg query transaction must be a string.");
+      }
       return {
-        rows: await engine.query(payload.sql, payload.params as unknown[]),
+        rows: await engine.query(
+          payload.sql,
+          payload.params as unknown[],
+          payload.transaction as string | undefined,
+        ),
       };
     }
     case "sync":
@@ -249,6 +269,53 @@ export function createOminipgWorkload(
       void engine.close().catch(() => {}).then(() => sink.abort(signal.reason));
     }, { once: true });
 
+    const respond = async (request: OminipgSessionRequest): Promise<void> => {
+      try {
+        const value = await executeRequest(engine, sink, request);
+        await sink.write({
+          protocol: OMINIPG_SESSION_PROTOCOL,
+          kind: "response",
+          id: request.id,
+          ok: true,
+          ...(value === undefined ? {} : { value }),
+        });
+      } catch (error) {
+        await sink.write({
+          protocol: OMINIPG_SESSION_PROTOCOL,
+          kind: "response",
+          id: request.id,
+          ok: false,
+          error: toErrorPayload(error),
+        });
+      }
+    };
+
+    // A concurrent (PostgreSQL) engine runs requests as they arrive, and
+    // requests on one transaction lane in arrival order. The loop must keep
+    // reading while a transaction is open, or the transaction's next statement
+    // could never arrive. Other engines, and close, run one request at a time.
+    let aborted: Promise<void> | undefined;
+    const abortSession = (error: unknown): Promise<void> =>
+      aborted ??= (async () => {
+        await engine.close().catch(() => {});
+        await sink.abort(error);
+      })();
+    const inFlight = new Set<Promise<void>>();
+    const laneTails = new Map<string, Promise<void>>();
+    const schedule = (request: OminipgSessionRequest): void => {
+      const lane = requestLane(request);
+      const previous = lane ? laneTails.get(lane) : undefined;
+      const task = (previous ?? Promise.resolve())
+        .then(() => respond(request))
+        .catch(abortSession);
+      inFlight.add(task);
+      if (lane) laneTails.set(lane, task);
+      void task.finally(() => {
+        inFlight.delete(task);
+        if (lane && laneTails.get(lane) === task) laneTails.delete(lane);
+      });
+    };
+
     void (async () => {
       try {
         for await (
@@ -257,31 +324,22 @@ export function createOminipgWorkload(
           })
         ) {
           const request = assertSessionRequest(raw);
-          try {
-            const value = await executeRequest(engine, sink, request);
-            await sink.write({
-              protocol: OMINIPG_SESSION_PROTOCOL,
-              kind: "response",
-              id: request.id,
-              ok: true,
-              ...(value === undefined ? {} : { value }),
-            });
-          } catch (error) {
-            await sink.write({
-              protocol: OMINIPG_SESSION_PROTOCOL,
-              kind: "response",
-              id: request.id,
-              ok: false,
-              error: toErrorPayload(error),
-            });
+          if (
+            engine.concurrent && request.operation !== "initialize" &&
+            request.operation !== "close"
+          ) {
+            schedule(request);
+            continue;
           }
+          await Promise.allSettled(inFlight);
+          await respond(request);
           if (request.operation === "close") break;
         }
+        await Promise.allSettled(inFlight);
         await engine.close();
         await sink.close();
       } catch (error) {
-        await engine.close().catch(() => {});
-        await sink.abort(error);
+        await abortSession(error);
       }
     })();
 

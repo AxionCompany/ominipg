@@ -18,7 +18,11 @@ import type {
 /*───────────────── Types ──────────────────*/
 
 export interface DatabaseClient {
-  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
+  query(
+    sql: string,
+    params?: unknown[],
+    transaction?: string,
+  ): Promise<{ rows: unknown[] }>;
   exec(sql: string): Promise<void>;
   listen?(channel: string, callback: () => void): Promise<void>;
   dumpDataDir?(): Promise<Blob>;
@@ -512,43 +516,51 @@ async function createExtensions(
 
 /*───────────────── PostgreSQL Adapter ──────────────────*/
 
+/** The lane of a BEGIN sent without one; unlaned statements then join it. */
+const DEFAULT_TRANSACTION = "";
+
 class PostgresAdapter implements DatabaseClient {
-  private transactionClient?: PgPoolClient;
+  private readonly transactions = new Map<string, PgPoolClient>();
 
   constructor(readonly pool: PgPool) {}
 
-  async query(sql: string, params?: unknown[]) {
+  async query(sql: string, params?: unknown[], transaction?: string) {
     const command = sql.trimStart().match(/^([A-Za-z]+)/)?.[1]?.toUpperCase();
+    const lane = transaction ?? DEFAULT_TRANSACTION;
     if (command === "BEGIN" || command === "START") {
-      if (this.transactionClient) {
+      if (this.transactions.has(lane)) {
         throw new Error("A PostgreSQL transaction is already active.");
       }
       const client = await this.pool.connect();
       try {
         const result = await client.query(sql, params ?? []);
-        this.transactionClient = client;
+        this.transactions.set(lane, client);
         return { rows: result.rows };
       } catch (error) {
         client.release(true);
         throw error;
       }
     }
-    if (this.transactionClient) {
-      const client = this.transactionClient;
+    const pinned = this.transactions.get(lane);
+    if (pinned) {
+      const ends = command === "COMMIT" || command === "ROLLBACK";
       try {
-        const result = await client.query(sql, params ?? []);
-        if (command === "COMMIT" || command === "ROLLBACK") {
-          this.transactionClient = undefined;
-          client.release();
+        const result = await pinned.query(sql, params ?? []);
+        if (ends) {
+          this.transactions.delete(lane);
+          pinned.release();
         }
         return { rows: result.rows };
       } catch (error) {
-        if (command === "COMMIT" || command === "ROLLBACK") {
-          this.transactionClient = undefined;
-          client.release(true);
+        if (ends) {
+          this.transactions.delete(lane);
+          pinned.release(true);
         }
         throw error;
       }
+    }
+    if (transaction !== undefined) {
+      throw new Error(`PostgreSQL transaction ${transaction} is not active.`);
     }
     const client = await this.pool.connect();
     try {
@@ -564,9 +576,9 @@ class PostgresAdapter implements DatabaseClient {
   }
 
   async close() {
-    if (this.transactionClient) {
-      const client = this.transactionClient;
-      this.transactionClient = undefined;
+    const pinned = [...this.transactions.values()];
+    this.transactions.clear();
+    for (const client of pinned) {
       try {
         await client.query("ROLLBACK");
       } catch {
@@ -653,8 +665,13 @@ export async function exec(
   state: EngineState,
   sql: string,
   params?: unknown[],
+  transaction?: string,
 ): Promise<unknown[]> {
-  const result = await requireMainDb(state).query(sql, params ?? []);
+  const result = await requireMainDb(state).query(
+    sql,
+    params ?? [],
+    transaction,
+  );
   return result.rows;
 }
 
