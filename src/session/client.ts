@@ -145,7 +145,8 @@ export class OminipgSessionClient {
   private readonly requestTimeoutMs: number;
   private readonly reading: Promise<void>;
   private writeTail: Promise<void> = Promise.resolve();
-  private requestTail: Promise<void> = Promise.resolve();
+  /** Holds new requests while a timed-out request drains. */
+  private requestGate: Promise<void> = Promise.resolve();
   private closing = false;
   private closed = false;
 
@@ -175,17 +176,11 @@ export class OminipgSessionClient {
     if (this.closed || this.closing && operation !== "close") {
       throw new Error("Ominipg session is closed.");
     }
-    const request = this.requestTail.then(
-      () => this.sendRequest<T>(operation, payload, timeoutMs),
-      () => this.sendRequest<T>(operation, payload, timeoutMs),
+    // Requests are sent without waiting for earlier responses; the workload
+    // decides what may run concurrently.
+    return await this.requestGate.then(() =>
+      this.sendRequest<T>(operation, payload, timeoutMs)
     );
-    this.requestTail = request.then(
-      () => undefined,
-      async () => {
-        await this.whenIdle();
-      },
-    );
-    return await request;
   }
 
   private async sendRequest<T>(
@@ -199,6 +194,7 @@ export class OminipgSessionClient {
         const pending = this.pending.get(id);
         if (!pending || pending.timedOut) return;
         pending.timedOut = true;
+        this.requestGate = this.requestGate.then(() => this.whenIdle());
         pending.reject(
           new Error(
             `Ominipg '${operation}' request timed out after ${timeoutMs}ms; ` +
