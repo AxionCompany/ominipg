@@ -17,42 +17,62 @@ export type AutoConfiguredOptions<T extends OminipgConnectionOptions> =
   & T
   & AutoProviders;
 
-const pgliteExtensionSpecifiers: Record<string, string> = {
-  vector: "npm:@electric-sql/pglite@^0.4.5/vector",
-  live: "npm:@electric-sql/pglite@^0.4.5/live",
-  uuid_ossp: "npm:@electric-sql/pglite@^0.4.5/contrib/uuid_ossp",
-  amcheck: "npm:@electric-sql/pglite@^0.4.5/contrib/amcheck",
-  auto_explain: "npm:@electric-sql/pglite@^0.4.5/contrib/auto_explain",
-  bloom: "npm:@electric-sql/pglite@^0.4.5/contrib/bloom",
-  btree_gin: "npm:@electric-sql/pglite@^0.4.5/contrib/btree_gin",
-  btree_gist: "npm:@electric-sql/pglite@^0.4.5/contrib/btree_gist",
-  citext: "npm:@electric-sql/pglite@^0.4.5/contrib/citext",
-  cube: "npm:@electric-sql/pglite@^0.4.5/contrib/cube",
-  earthdistance: "npm:@electric-sql/pglite@^0.4.5/contrib/earthdistance",
-  fuzzystrmatch: "npm:@electric-sql/pglite@^0.4.5/contrib/fuzzystrmatch",
-  hstore: "npm:@electric-sql/pglite@^0.4.5/contrib/hstore",
-  isn: "npm:@electric-sql/pglite@^0.4.5/contrib/isn",
-  lo: "npm:@electric-sql/pglite@^0.4.5/contrib/lo",
-  ltree: "npm:@electric-sql/pglite@^0.4.5/contrib/ltree",
-  pg_trgm: "npm:@electric-sql/pglite@^0.4.5/contrib/pg_trgm",
-  seg: "npm:@electric-sql/pglite@^0.4.5/contrib/seg",
-  tablefunc: "npm:@electric-sql/pglite@^0.4.5/contrib/tablefunc",
-  tcn: "npm:@electric-sql/pglite@^0.4.5/contrib/tcn",
-  tsm_system_rows: "npm:@electric-sql/pglite@^0.4.5/contrib/tsm_system_rows",
-  tsm_system_time: "npm:@electric-sql/pglite@^0.4.5/contrib/tsm_system_time",
+const PGLITE_EXTENSION_PATHS: Record<string, string> = {
+  vector: "vector",
+  live: "live",
+  uuid_ossp: "contrib/uuid_ossp",
+  amcheck: "contrib/amcheck",
+  auto_explain: "contrib/auto_explain",
+  bloom: "contrib/bloom",
+  btree_gin: "contrib/btree_gin",
+  btree_gist: "contrib/btree_gist",
+  citext: "contrib/citext",
+  cube: "contrib/cube",
+  earthdistance: "contrib/earthdistance",
+  fuzzystrmatch: "contrib/fuzzystrmatch",
+  hstore: "contrib/hstore",
+  isn: "contrib/isn",
+  lo: "contrib/lo",
+  ltree: "contrib/ltree",
+  pg_trgm: "contrib/pg_trgm",
+  seg: "contrib/seg",
+  tablefunc: "contrib/tablefunc",
+  tcn: "contrib/tcn",
+  tsm_system_rows: "contrib/tsm_system_rows",
+  tsm_system_time: "contrib/tsm_system_time",
 };
 
+/**
+ * Deno resolves versioned `npm:` specifiers itself. Node and Bun load this
+ * JSR package from `node_modules`, where only bare package names resolve.
+ */
+function npmSpecifier(name: string, version: string, subpath?: string): string {
+  const path = subpath ? `/${subpath}` : "";
+  return "Deno" in globalThis
+    ? `npm:${name}@${version}${path}`
+    : `${name}${path}`;
+}
+
 function createAutoPGliteProvider(): PGliteProvider {
+  const pglite = (subpath?: string) =>
+    npmSpecifier("@electric-sql/pglite", "^0.4.5", subpath);
   return {
-    moduleSpecifier: "npm:@electric-sql/pglite@^0.4.5",
-    extensionSpecifiers: pgliteExtensionSpecifiers,
+    moduleSpecifier: pglite(),
+    extensionSpecifiers: Object.fromEntries(
+      Object.entries(PGLITE_EXTENSION_PATHS).map((
+        [name, subpath],
+      ) => [name, pglite(subpath)]),
+    ),
   };
 }
 
 function createAutoPgProvider(): PgProvider {
   return {
-    moduleSpecifier: "npm:pg@^8.16.3",
-    logicalReplicationModuleSpecifier: "npm:pg-logical-replication@^2.4.0",
+    moduleSpecifier: npmSpecifier("pg", "^8.16.3"),
+    logicalReplicationModuleSpecifier: npmSpecifier(
+      "pg-logical-replication",
+      "^2.4.0",
+    ),
   };
 }
 

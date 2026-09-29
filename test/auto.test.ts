@@ -71,3 +71,20 @@ Deno.test("resolveAutoProviders rejects unsupported sync shapes", () => {
     "sync currently requires a local PGlite url",
   );
 });
+
+Deno.test("auto providers use versioned npm: specifiers under Deno", () => {
+  const configured = autoConfigure({
+    url: ":memory:",
+    syncUrl: "postgres://user:pass@localhost:5432/app",
+  });
+
+  assertEquals(
+    configured.pgliteProvider?.moduleSpecifier,
+    "npm:@electric-sql/pglite@^0.4.5",
+  );
+  assertEquals(
+    configured.pgliteProvider?.extensionSpecifiers?.vector,
+    "npm:@electric-sql/pglite@^0.4.5/vector",
+  );
+  assertEquals(configured.pgProvider?.moduleSpecifier, "npm:pg@^8.16.3");
+});
