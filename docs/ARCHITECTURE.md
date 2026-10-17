@@ -287,6 +287,40 @@ budget, database-wide PGlite exclusivity in the presence of background sync, or
 snapshot expiry. Those require separate host/backend contracts. A transaction is
 session-scoped, not an application-wide lock.
 
+### Internal snapshot connection reservation
+
+PostgreSQL now uses one accounted wrapper around its existing pool. The SQL
+adapter and listener hub share that wrapper, so ordinary queries, transaction
+BEGIN and LISTEN/reconnect all count. Pending checkouts count too. Ordinary pool
+queueing and the configured total connection limit remain unchanged.
+
+The internal `reservePair()` operation admits at most one two-client reservation
+and refuses before any BEGIN unless two units fit alongside existing borrows.
+The pair is claimed synchronously before either connect can await. While it is
+being acquired, normal callers can use the remaining capacity. Once both clients
+are held, ordinary calls use the provider's normal queue and cannot take those
+reserved clients. No second pool, service, execution lease or new public session
+operation is introduced. The provider must honor its configured pool limit and
+query/release contracts.
+
+Pair executors seal on release or pool end; already-admitted query promises
+drain before both clients are reset with ROLLBACK and returned. A failed reset
+discards that client. Failed returns retain their charge and cleanup handle.
+Aborted or failed acquisition waits for both raw connect results and returns
+late clients; its signal covers admission, while a delivered pair is owned until
+release/end. Retained handles refuse new queries. Existing normal clients can
+finish their terminal SQL during close; the wrapper preserves their provider's
+double-release behavior and captures each checkout's release closure across
+client reuse.
+
+Initialization also ends a pool whose connect/probe/release failed before the
+engine could retain its adapter. The wrapper does not make arbitrary provider
+failures cancellable or prove physical closure from elapsed time.
+
+This is a backend prerequisite. The callback-bound snapshot/control operation,
+private PGlite exclusive certification, stable-generation forwarding and owner
+snapshot authorization/expiry are not activated by this internal reservation.
+
 ### Sync
 
 Sync belongs to the engine session:

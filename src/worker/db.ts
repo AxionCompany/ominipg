@@ -1,5 +1,6 @@
 import { detectDatabaseType } from "./utils.ts";
 import { transactionControl } from "./transaction-control.ts";
+import { AccountedPgPool } from "./pool-capacity.ts";
 import { applyDefaultLowMemoryPGliteConfig } from "../shared/pglite_config.ts";
 import type {
   LogicalReplicationServiceLike,
@@ -523,7 +524,7 @@ const DEFAULT_TRANSACTION = "";
 class PostgresAdapter implements DatabaseClient {
   private readonly transactions = new Map<string, PgPoolClient>();
 
-  constructor(readonly pool: PgPool) {}
+  constructor(readonly pool: AccountedPgPool) {}
 
   async query(sql: string, params?: unknown[], transaction?: string) {
     const control = transactionControl(sql);
@@ -599,19 +600,28 @@ async function initializePostgreSQL(
   statementTimeoutMs?: number,
 ): Promise<PostgresAdapter> {
   const pg = await loadPgModule(provider);
-  const pool = new pg.Pool({
-    connectionString: url,
+  const pool = new AccountedPgPool(
+    new pg.Pool({
+      connectionString: url,
+      max,
+      ...(statementTimeoutMs === undefined
+        ? {}
+        : { statement_timeout: statementTimeoutMs }),
+    }),
     max,
-    ...(statementTimeoutMs === undefined
-      ? {}
-      : { statement_timeout: statementTimeoutMs }),
-  });
-  const client = await pool.connect();
+  );
   try {
-    await client.query("SELECT 1"); // Test connection
-    return new PostgresAdapter(pool);
-  } finally {
-    client.release();
+    const client = await pool.connect();
+    try {
+      await client.query("SELECT 1"); // Test connection
+      return new PostgresAdapter(pool);
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    // The engine cannot close an adapter that initialization never returned.
+    await pool.end().catch(() => {});
+    throw error;
   }
 }
 
