@@ -321,6 +321,35 @@ This is a backend prerequisite. The callback-bound snapshot/control operation,
 private PGlite exclusive certification, stable-generation forwarding and owner
 snapshot authorization/expiry are not activated by this internal reservation.
 
+### Internal native PGlite snapshot prerequisite
+
+The native PGlite transaction mutex can hold an exclusive read scope without
+adding another lock. The internal helper keeps the native transaction private,
+seals its query-shaped reader on close/abort, drains admitted raw statements and
+explicitly confirms ROLLBACK. Unknown BEGIN or rollback outcome quarantines the
+owned database through the caller's fail-close operation. Opening waits for
+readonly setup; closing waits for actual cleanup, not an elapsed-time guess.
+
+The adapter lazily compares its actual constructor against the native module
+resolved from a recognized built-in Deno/Node descriptor. It captures native
+methods and awaits WASM readiness before exposing the real isInTransaction
+predicate. The effective configuration is deliberately restricted to primitive
+startParams/relaxedDurability inputs; custom extensions and filesystem hooks are
+unsupported for this scope. Unsupported providers/configurations retain ordinary
+query behavior. There is no new caller isolation flag, provider registry or
+literal vendor import in the core dependency graph.
+
+This remains an internal trusted-query primitive, not an arbitrary-SQL sandbox.
+Only compiled snapshot reads may use its executor; transaction control,
+SET/RESET and other session-changing SQL are forbidden by that caller contract.
+READ ONLY cannot confine a caller that deliberately ends its own transaction.
+
+Engine-level admission must still synchronously claim the resource, drain prior
+operations, exclude sync and verify actual SQL-idle state before BEGIN. A native
+BEGIN can otherwise join an earlier manually opened transaction. Host shutdown,
+session open/query/end frames, generation lifetime and owner authorization are
+not activated by this helper.
+
 ### Sync
 
 Sync belongs to the engine session:
