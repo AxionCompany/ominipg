@@ -37,7 +37,7 @@ function deferred<T>() {
  * READ ONLY alone cannot protect a caller that deliberately ends its scope. */
 export async function openExclusiveReadSnapshot(
   provider: ExclusiveSnapshotProvider,
-  failClose: () => Promise<void>,
+  failClose: (reason: unknown) => Promise<void>,
   signal?: AbortSignal,
 ): Promise<ExclusiveReadSnapshot> {
   signal?.throwIfAborted();
@@ -115,7 +115,7 @@ export async function openExclusiveReadSnapshot(
   ).catch(async (error) => {
     if (!rollbackConfirmed) {
       try {
-        await failClose();
+        await failClose(error);
       } catch (cleanupError) {
         throw new AggregateError(
           [error, cleanupError],

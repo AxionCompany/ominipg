@@ -122,14 +122,16 @@ across any number of transport chunks.
 
 1. resolves runtime-owned database providers;
 2. creates one `OminipgEngine`;
-3. reads requests sequentially from the operation input stream;
+3. reads framed requests and schedules commands on the engine's supported lanes;
 4. writes correlated responses and asynchronous database events;
 5. closes engine resources when the client closes, input ends, or the Oxian
    operation is cancelled.
 
-Sequential request execution gives each session deterministic query order and
-allows a PostgreSQL transaction to retain one checked-out pool client between
-`BEGIN` and `COMMIT`/`ROLLBACK`.
+PGlite dispatch awaits each command. PostgreSQL schedules independent commands
+concurrently and preserves arrival order within each transaction lane. A named
+transaction retains one checked-out client from BEGIN through COMMIT/ROLLBACK.
+Transaction and snapshot scheduling keys are tagged tuples, so arbitrary caller
+transaction strings cannot collide with snapshot lanes.
 
 Dependencies can be fixed or selected from Oxian metadata:
 
@@ -344,11 +346,45 @@ Only compiled snapshot reads may use its executor; transaction control,
 SET/RESET and other session-changing SQL are forbidden by that caller contract.
 READ ONLY cannot confine a caller that deliberately ends its own transaction.
 
-Engine-level admission must still synchronously claim the resource, drain prior
-operations, exclude sync and verify actual SQL-idle state before BEGIN. A native
-BEGIN can otherwise join an earlier manually opened transaction. Host shutdown,
-session open/query/end frames, generation lifetime and owner authorization are
-not activated by this helper.
+The engine integration below owns resource claim, prior-operation drain, sync
+exclusion and actual SQL-idle admission. The helper alone is not that ownership
+contract. Generation lifetime and owner authorization remain separate gates.
+
+### Read snapshot resource protocol
+
+The internal session protocol now supports snapshot-open, snapshot-query and
+snapshot-close with a bounded caller-created snapshotId. At most one resource is
+active per engine. Opening acknowledges after actual transaction/setup
+readiness; it does not wait for the whole native callback, so subsequent PGlite
+frames can make progress. Queries remain trusted SQL from the database client,
+not untrusted worker Collection input.
+
+PGlite claims admission synchronously, drains previously accepted ordinary
+operations, rejects sync mode, obtains the certified native provider and checks
+actual transaction-idle state. Ordinary engine commands refuse while the scope
+is live. PostgreSQL reserves its accounted pair and exposes independent snapshot
+and current-state query lanes; current transactions use the second reserved
+client. Ordinary queued checkouts cannot block those lanes or their close.
+
+Close seals new scoped reads, drains admitted raw work and releases the
+resource. A result completed after resource revocation is not returned. Partial
+acquisition with an unconfirmed client return is distinguished by an internal
+cleanup-error class and quarantines engine admission; confirmed acquisition
+failure or capacity refusal leaves ordinary usage available. Terminal cleanup
+failure survives record removal and remains observable through later
+snapshot-close/engine-close, even when physical shutdown itself subsequently
+succeeds.
+
+Graceful transport close and EOF first seal future snapshot admission and
+release snapshot pins, then drain already-accepted ordinary lane commands, then
+close the engine. This avoids both a pin/checkout shutdown deadlock and
+rejecting queued legacy UPDATE/COMMIT work merely because a close frame arrived.
+Host cancellation uses the engine's direct abort/close path. Unknown cleanup is
+never interpreted as free capacity or permission to replay an operation.
+
+These are backend resources and frames. The callback-level client capability,
+managed-generation forwarding and owner historical-read authorization/expiry are
+not activated by this protocol addition.
 
 ### Sync
 

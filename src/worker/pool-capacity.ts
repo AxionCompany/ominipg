@@ -39,6 +39,15 @@ function unavailable(): Error {
   );
 }
 
+/** Only emitted when this acquisition cannot confirm return of its own
+ * partially acquired clients. Capacity refusal is not this failure class. */
+export class PgPairCleanupError extends AggregateError {
+  constructor(causes: unknown[]) {
+    super(causes, "PostgreSQL pair acquisition cleanup is unconfirmed.");
+    this.name = "PgPairCleanupError";
+  }
+}
+
 /** One shared checkout boundary. Normal calls retain the provider's queueing;
  * an optional pair reservation must fit within the same configured total. */
 export class AccountedPgPool implements PgPool {
@@ -167,10 +176,7 @@ export class AccountedPgPool implements PgPool {
       try {
         await this.releasePair(state);
       } catch (error) {
-        if (!failed) {
-          failure = error;
-          failed = true;
-        }
+        throw new PgPairCleanupError(failed ? [failure, error] : [error]);
       }
       if (failed) throw failure;
       throw signal?.aborted ? signal.reason : closed();
