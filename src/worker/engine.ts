@@ -20,6 +20,7 @@ import { getDiagnosticInfo } from "./diagnostics.ts";
 import { synchronizeSequences } from "./sync/sequences.ts";
 import { pushBatch } from "./sync/pusher.ts";
 import { AccountedPgPool, PgPairCleanupError } from "./pool-capacity.ts";
+import { openExclusiveReadSnapshot } from "./exclusive-snapshot.ts";
 
 type SnapshotResource = Readonly<{
   query(
@@ -190,13 +191,44 @@ export class OminipgEngine {
     }
     if (!id || id.length > 256) throw new TypeError("Invalid snapshot id.");
     if (this.snapshot) throw new Error("A read snapshot is already active.");
-    if (!this.concurrent) {
-      throw new Error("Read snapshots require a PostgreSQL connection.");
+    const kind = this.concurrent ? "pooled" : "exclusive";
+    if (
+      kind === "exclusive" && (this.state.syncPool || this.state.syncStarted)
+    ) {
+      throw new Error("Exclusive snapshots do not support background sync.");
     }
-    const kind = "pooled";
     const controller = new AbortController();
+    const preceding = [...this.ordinary];
     const opening = Promise.resolve().then(
       async (): Promise<SnapshotResource> => {
+        if (kind === "exclusive") {
+          // Claim is installed synchronously below. All accepted ordinary work
+          // drains before the actual SQL-idle predicate, with no new admission.
+          await Promise.allSettled(preceding);
+          controller.signal.throwIfAborted();
+          const db = this.state.mainDb;
+          if (!db?.exclusiveSnapshotProvider) {
+            throw new Error("Exclusive snapshot provider is unavailable.");
+          }
+          const provider = await db.exclusiveSnapshotProvider();
+          controller.signal.throwIfAborted();
+          const reader = await openExclusiveReadSnapshot(
+            provider,
+            (error) => this.quarantine(error),
+            controller.signal,
+          );
+          return {
+            async query(sql, params, current) {
+              if (current) {
+                throw new Error(
+                  "Exclusive snapshots have no independent current lane.",
+                );
+              }
+              return (await reader.query(sql, params)).rows;
+            },
+            close: reader.close,
+          };
+        }
         const pool = this.state.mainPool;
         if (!(pool instanceof AccountedPgPool)) {
           throw new Error("Accounted snapshot pool is unavailable.");

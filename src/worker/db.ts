@@ -1,6 +1,7 @@
 import { detectDatabaseType } from "./utils.ts";
 import { transactionControl } from "./transaction-control.ts";
 import { AccountedPgPool } from "./pool-capacity.ts";
+import type { ExclusiveSnapshotProvider } from "./exclusive-snapshot.ts";
 import { applyDefaultLowMemoryPGliteConfig } from "../shared/pglite_config.ts";
 import type {
   LogicalReplicationServiceLike,
@@ -28,6 +29,8 @@ export interface DatabaseClient {
   exec(sql: string): Promise<void>;
   listen?(channel: string, callback: () => void): Promise<void>;
   dumpDataDir?(): Promise<Blob>;
+  /** Internal owned-provider seam; caller still owns idle/drain admission. */
+  exclusiveSnapshotProvider?(): Promise<ExclusiveSnapshotProvider>;
   close(): Promise<void>;
 }
 
@@ -106,6 +109,9 @@ export function requireMainDb(state: EngineState): DatabaseClient {
 
 // Minimal PGlite interface
 interface PGliteLike {
+  waitReady?: Promise<void>;
+  isInTransaction?: ExclusiveSnapshotProvider["isInTransaction"];
+  transaction?: ExclusiveSnapshotProvider["transaction"];
   query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
   exec(sql: string): Promise<unknown>;
   listen(channel: string, callback: () => void): Promise<unknown>;
@@ -114,7 +120,54 @@ interface PGliteLike {
 }
 
 class PGliteAdapter implements DatabaseClient {
-  constructor(private pglite: PGliteLike) {}
+  private readonly snapshotConfigSupported: boolean;
+
+  constructor(
+    private pglite: PGliteLike,
+    private readonly constructorIdentity: unknown,
+    private readonly moduleSpecifier: string | undefined,
+    config: PGliteConfig | undefined,
+  ) {
+    // Certify actual constructor inputs, not active SQL extension names.
+    // Custom JS extensions/filesystem hooks can retain raw protocol access.
+    this.snapshotConfigSupported = Object.entries(config ?? {}).every(
+      ([key, value]) =>
+        key === "relaxedDurability" && typeof value === "boolean" ||
+        key === "startParams" && Array.isArray(value) &&
+          value.every((entry) => typeof entry === "string"),
+    );
+  }
+
+  async exclusiveSnapshotProvider(): Promise<ExclusiveSnapshotProvider> {
+    const specifier = this.moduleSpecifier;
+    if (
+      !this.snapshotConfigSupported ||
+      (specifier !== "npm:@electric-sql/pglite@^0.4.5" &&
+        specifier !== "@electric-sql/pglite")
+    ) {
+      throw new Error(
+        "Exclusive snapshots are unsupported by this PGlite configuration.",
+      );
+    }
+    // Resolve only on snapshot admission. Keep core vendor imports dynamic so
+    // ordinary custom-provider and PostgreSQL-only deployments remain optional.
+    const native = await importModule<PGliteModule>(specifier);
+    if (
+      native.PGlite !== this.constructorIdentity ||
+      typeof this.pglite.transaction !== "function" ||
+      typeof this.pglite.isInTransaction !== "function"
+    ) {
+      throw new Error(
+        "Exclusive snapshots require the native private PGlite provider.",
+      );
+    }
+    const transaction = this.pglite.transaction.bind(this.pglite);
+    const isInTransaction = this.pglite.isInTransaction.bind(this.pglite);
+    // Native construction is asynchronous even after a schema-free engine boot.
+    // Its synchronous SQL-idle predicate is valid only after WASM readiness.
+    await this.pglite.waitReady;
+    return { transaction, isInTransaction };
+  }
 
   async query(sql: string, params?: unknown[]) {
     return await this.pglite.query(sql, params ?? []);
@@ -367,6 +420,9 @@ async function initializePGlite(
       (mergedConfig
         ? new PGlite(mergedConfig)
         : new PGlite()) as unknown as PGliteLike,
+      PGlite,
+      provider?.moduleSpecifier,
+      mergedConfig,
     );
     let activatedSqlNames: string[] = [];
     if (loadedExtensionNames.length > 0) {
@@ -396,7 +452,12 @@ async function initializePGlite(
     const pglite = mergedConfig
       ? new PGlite(dbPath, mergedConfig)
       : new PGlite(dbPath);
-    const adapter = new PGliteAdapter(pglite as unknown as PGliteLike);
+    const adapter = new PGliteAdapter(
+      pglite as unknown as PGliteLike,
+      PGlite,
+      provider?.moduleSpecifier,
+      mergedConfig,
+    );
     let activatedSqlNames: string[] = [];
     if (loadedExtensionNames.length > 0) {
       // The engine itself can ask PostgreSQL which extensions already exist;
@@ -429,6 +490,9 @@ async function initializePGlite(
       (fallbackConfig
         ? new PGlite(fallbackConfig)
         : new PGlite()) as unknown as PGliteLike,
+      PGlite,
+      provider?.moduleSpecifier,
+      fallbackConfig,
     );
     let activatedSqlNames: string[] = [];
     if (loadedExtensionNames.length > 0) {

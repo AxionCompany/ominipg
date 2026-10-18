@@ -122,14 +122,16 @@ across any number of transport chunks.
 
 1. resolves runtime-owned database providers;
 2. creates one `OminipgEngine`;
-3. reads requests sequentially from the operation input stream;
+3. reads framed requests and schedules commands on the engine's supported lanes;
 4. writes correlated responses and asynchronous database events;
 5. closes engine resources when the client closes, input ends, or the Oxian
    operation is cancelled.
 
-Sequential request execution gives each session deterministic query order and
-allows a PostgreSQL transaction to retain one checked-out pool client between
-`BEGIN` and `COMMIT`/`ROLLBACK`.
+PGlite dispatch awaits each command. PostgreSQL schedules independent commands
+concurrently and preserves arrival order within each transaction lane. A named
+transaction retains one checked-out client from BEGIN through COMMIT/ROLLBACK.
+Transaction and snapshot scheduling keys are tagged tuples, so arbitrary caller
+transaction strings cannot collide with snapshot lanes.
 
 Dependencies can be fixed or selected from Oxian metadata:
 
@@ -287,6 +289,162 @@ budget, database-wide PGlite exclusivity in the presence of background sync, or
 snapshot expiry. Those require separate host/backend contracts. A transaction is
 session-scoped, not an application-wide lock.
 
+### Internal snapshot connection reservation
+
+PostgreSQL now uses one accounted wrapper around its existing pool. The SQL
+adapter and listener hub share that wrapper, so ordinary queries, transaction
+BEGIN and LISTEN/reconnect all count. Pending checkouts count too. Ordinary pool
+queueing and the configured total connection limit remain unchanged.
+
+The internal `reservePair()` operation admits at most one two-client reservation
+and refuses before any BEGIN unless two units fit alongside existing borrows.
+The pair is claimed synchronously before either connect can await. While it is
+being acquired, normal callers can use the remaining capacity. Once both clients
+are held, ordinary calls use the provider's normal queue and cannot take those
+reserved clients. No second pool, service, execution lease or new public session
+operation is introduced. The provider must honor its configured pool limit and
+query/release contracts.
+
+Pair executors seal on release or pool end; already-admitted query promises
+drain before both clients are reset with ROLLBACK and returned. A failed reset
+discards that client. Failed returns retain their charge and cleanup handle.
+Aborted or failed acquisition waits for both raw connect results and returns
+late clients; its signal covers admission, while a delivered pair is owned until
+release/end. Retained handles refuse new queries. Existing normal clients can
+finish their terminal SQL during close; the wrapper preserves their provider's
+double-release behavior and captures each checkout's release closure across
+client reuse.
+
+Initialization also ends a pool whose connect/probe/release failed before the
+engine could retain its adapter. The wrapper does not make arbitrary provider
+failures cancellable or prove physical closure from elapsed time.
+
+This is a backend prerequisite. The callback-bound snapshot/control operation,
+private PGlite exclusive certification, stable-generation forwarding and owner
+snapshot authorization/expiry are not activated by this internal reservation.
+
+### PostgreSQL provider fault ownership
+
+The accounted boundary observes native client errors for the whole checkout,
+including the first acquired half of a pending pair, transaction gaps and
+reset/return. A fault latches that borrow closed to later SQL and requests
+client destruction on its eventual return. It does not return capacity early,
+retry a statement or establish the outcome of an uncertain COMMIT. A throwing
+return retains its observer and existing cleanup charge until return succeeds.
+
+Native pool errors from idle clients are observed before the first checkout and
+through pool shutdown. Unknown/failed shutdown retains observation. Both the
+main PostgreSQL pool and the remote sync pool use this boundary; PGlite remains
+an independent in-process default.
+
+Errors travel through the existing engine/workload/session diagnostic route. The
+same native Error object observed through pool/listener paths produces one
+global diagnostic and still reaches the affected subscription error/state
+handlers. Different Error objects from one outage remain distinct, and session
+diagnostic delivery is best-effort. Subscription-specific frames do not repeat
+global delivery. Host diagnostic callbacks that throw or reject cannot interrupt
+resource cleanup. Native SQL promises still reject independently; an error event
+is not a transaction receipt or automatic retry instruction.
+
+Custom PostgreSQL providers must implement the existing client event methods as
+well as query/release. Pools exposing native error events are observed too. No
+new service, worker lease or public topology option is introduced.
+
+### Internal native PGlite snapshot prerequisite
+
+The native PGlite transaction mutex can hold an exclusive read scope without
+adding another lock. The internal helper keeps the native transaction private,
+seals its query-shaped reader on close/abort, drains admitted raw statements and
+explicitly confirms ROLLBACK. Unknown BEGIN or rollback outcome quarantines the
+owned database through the caller's fail-close operation. Opening waits for
+readonly setup; closing waits for actual cleanup, not an elapsed-time guess.
+
+The adapter lazily compares its actual constructor against the native module
+resolved from a recognized built-in Deno/Node descriptor. It captures native
+methods and awaits WASM readiness before exposing the real isInTransaction
+predicate. The effective configuration is deliberately restricted to primitive
+startParams/relaxedDurability inputs; custom extensions and filesystem hooks are
+unsupported for this scope. Unsupported providers/configurations retain ordinary
+query behavior. There is no new caller isolation flag, provider registry or
+literal vendor import in the core dependency graph.
+
+This remains an internal trusted-query primitive, not an arbitrary-SQL sandbox.
+Only compiled snapshot reads may use its executor; transaction control,
+SET/RESET and other session-changing SQL are forbidden by that caller contract.
+READ ONLY cannot confine a caller that deliberately ends its own transaction.
+
+The engine integration below owns resource claim, prior-operation drain, sync
+exclusion and actual SQL-idle admission. The helper alone is not that ownership
+contract. Generation lifetime and owner authorization remain separate gates.
+
+### Read snapshot resource protocol
+
+The internal session protocol now supports snapshot-open, snapshot-query and
+snapshot-close with a bounded caller-created snapshotId. At most one resource is
+active per engine. Opening acknowledges after actual transaction/setup
+readiness; it does not wait for the whole native callback, so subsequent PGlite
+frames can make progress. Queries remain trusted SQL from the database client,
+not untrusted worker Collection input.
+
+PGlite claims admission synchronously, drains previously accepted ordinary
+operations, rejects sync mode, obtains the certified native provider and checks
+actual transaction-idle state. Ordinary engine commands refuse while the scope
+is live. PostgreSQL reserves its accounted pair and exposes independent snapshot
+and current-state query lanes; current transactions use the second reserved
+client. Ordinary queued checkouts cannot block those lanes or their close.
+
+Close seals new scoped reads, drains admitted raw work and releases the
+resource. A result completed after resource revocation is not returned. Partial
+acquisition with an unconfirmed client return is distinguished by an internal
+cleanup-error class and quarantines engine admission; confirmed acquisition
+failure or capacity refusal leaves ordinary usage available. Terminal cleanup
+failure survives record removal and remains observable through later
+snapshot-close/engine-close, even when physical shutdown itself subsequently
+succeeds.
+
+Graceful transport close and EOF first seal future snapshot admission and
+release snapshot pins, then drain already-accepted ordinary lane commands, then
+close the engine. This avoids both a pin/checkout shutdown deadlock and
+rejecting queued legacy UPDATE/COMMIT work merely because a close frame arrived.
+Host cancellation uses the engine's direct abort/close path. Unknown cleanup is
+never interpreted as free capacity or permission to replay an operation.
+
+These backend resources and frames support the callback capability below.
+Managed-generation forwarding and owner historical-read authorization/expiry
+remain separate integration gates.
+
+### Callback snapshot capability
+
+Ominipg.withReadSnapshot(callback, { signal }) admits one scope per database
+instance. The workload must advertise snapshotProtocol: 1; older workloads
+refuse this capability rather than silently substituting ordinary reads. The
+returned scope has kind: "exclusive" or kind: "pooled" and a snapshot
+query/queryRaw executor. Pooled scopes also provide current(callback), which
+serializes transactions on the already-reserved control connection.
+
+The callback's return value is local computation. Query handles seal at scope
+end, and actual request/transaction cleanup finishes before the method settles.
+Signal cancellation and database close abort the scope, including a held local
+callback, without treating that local computation as forcibly terminated.
+Detached callback code can still run, but retained executors refuse further
+work. A late abort before cleanup completes suppresses the callback result.
+
+Current-state transactions reuse the same scoped transaction lifecycle as normal
+database transactions, including executor sealing, raw request drain and
+uncertain rollback fail-close. No separate transaction evaluator is added.
+Concurrent current calls serialize; do not nest current inside its own callback.
+Nested/concurrent snapshot scopes on one instance refuse immediately.
+
+Only trusted compiled read SQL belongs on the snapshot executor. Do not send
+transaction-control or session-changing SQL through it. Use the supplied
+executors inside callbacks: awaiting ordinary PGlite database operations there
+would wait behind the scope itself. Cancellation is not proof that previously
+admitted SQL or COMMIT did not execute, and does not authorize callback replay.
+
+The capability is also forwarded by the Drizzle mixin. It is a backend API;
+Copilotz generation fencing and public owner Collection snapshot authorization
+remain separate work.
+
 ### Sync
 
 Sync belongs to the engine session:
@@ -346,46 +504,33 @@ driver and network model.
 - [Sync](./SYNC.md)
 - [PostgreSQL notifications](./NOTIFICATIONS.md)
 
-### PostgreSQL provider ownership and shutdown
+### Snapshot cleanup outcome
 
-The shared checkout boundary observes provider pool and client faults. A failed
-client stays unusable until return, and a throwing return retains its cleanup
-handle and capacity charge. Error observers cannot change SQL outcomes. Engine
-shutdown seals new transaction admission, drains admitted pinned SQL, and
-returns late successful opens directly so queued checkouts cannot wait on
-retained pins. It attempts every rollback/return plus pool shutdown before
-aggregating cleanup failures. Confirmed discard is sufficient when rollback is
-unavailable; failed physical returns remain owned by the pool.
+The optional `withReadSnapshot` cleanup observer receives `confirmed` or
+`unknown`, independently of the callback's returned value or thrown error.
+Confirmation means this invocation submitted no snapshot open, or its exact
+snapshot-close acknowledgement succeeded after admitted work drained. A failed
+reset followed by a confirmed client discard is still confirmed cleanup.
+Unconfirmed return/close remains unknown; error text, error classes and callback
+entry alone do not establish release.
 
-### PostgreSQL read snapshots
+The observer is captured once and called once after controller/listener cleanup.
+Observer exceptions or rejected observer promises do not replace the original
+scope outcome. Cancellation is checked again before exposing a successful value.
+Consumers must wait for the actual scoped operation to settle as well as record
+the observation; missing observation is unknown. This proves release of this
+scope only, never current application authority, safe mutation replay, or global
+database shutdown. No wire operation or additional resource registry is added.
 
-`withReadSnapshot(callback, { signal, onCleanup })` opens one owned read-only
-`REPEATABLE READ` snapshot. In a pooled scope,
-`scope.snapshot.query(sql, params)` reads historical rows and
-`scope.current(fn)` serializes independent current transactions. Its executors
-accept trusted compiled SQL; arbitrary transaction control or session-changing
-SQL is outside the read-executor contract.
+### Terminal shutdown guarantees
 
-The existing shared pool reserves a snapshot/current pair within `pgPoolMax`.
-Ordinary queries, transaction pins, and LISTEN pins count toward the same limit.
-Reservation refuses before BEGIN if two connections cannot fit. A two-connection
-pool can hold one snapshot while ordinary work waits for its release.
+PostgreSQL shutdown seals transaction admission, drains admitted pinned SQL, and
+returns late successful opens directly. Existing pins are returned before
+waiting for queued opens, so shutdown cannot deadlock on its own pool capacity.
+It attempts every rollback/return and pool shutdown, aggregates cleanup
+failures, and retains any failed physical return in the pool's owned cleanup
+handles.
 
-Callback settlement or abort seals the scope, drains admitted SQL and current
-transactions, and returns the pair. Retained executors refuse new work. Aborted
-queries cannot disclose late results, and cancellation is checked before the
-callback's result is exposed. Terminal session EOF or transport failure cancels
-a held callback even when no SQL request is pending.
-
-`onCleanup` is captured once and called exactly once with `confirmed` or
-`unknown`, independently of the callback's value or error. Confirmation requires
-either no submitted open or the exact close acknowledgement after raw drain. A
-failed return or lost close acknowledgement remains unknown and retires the
-session. Observer failures do not replace the operation outcome. The library
-sets no idle or lifetime timer; the owner supplies cancellation and
-authorization policy.
-
-The internal snapshot-open/query/close protocol carries one bounded resource.
-Graceful EOF and explicit close release snapshot pins before waiting on accepted
-ordinary checkouts. This release enables PostgreSQL snapshots; native PGlite
-snapshots are a separately verified provider capability.
+Terminal session EOF or transport failure cancels a held snapshot callback even
+when no SQL request is pending. Without the exact close acknowledgement, cleanup
+remains `unknown`; late callback results and retained reads cannot escape.

@@ -23,6 +23,84 @@ async function session(url = ":memory:", max = 2) {
     throw error;
   }
 }
+Deno.test("PGlite session acknowledges snapshot opening before scoped query and end frames", async () => {
+  const { client } = await session();
+  try {
+    assertEquals(
+      await client.request("snapshot-open", { snapshotId: "native" }),
+      { kind: "exclusive" },
+    );
+    assertEquals(
+      await client.request("snapshot-query", {
+        snapshotId: "native",
+        sql: "SELECT 42 AS value",
+      }),
+      { rows: [{ value: 42 }] },
+    );
+    await assertRejects(
+      () => client.request("query", { sql: "SELECT 1" }),
+      Error,
+      "exclusive snapshot",
+    );
+    await client.request("snapshot-close", { snapshotId: "native" });
+    assertEquals(await client.request("query", { sql: "SELECT 43 AS value" }), {
+      rows: [{ value: 43 }],
+    });
+  } finally {
+    await client.close();
+  }
+});
+Deno.test("PGlite session close ends a live native snapshot", async () => {
+  const { client } = await session();
+  await client.request("snapshot-open", { snapshotId: "closing" });
+  await client.close();
+});
+Deno.test("snapshot frame validates typed fields without leaking scope", async () => {
+  const { client } = await session();
+  try {
+    await assertRejects(
+      () => client.request("snapshot-open", { snapshotId: "" }),
+      Error,
+      "snapshotId",
+    );
+    await client.request("snapshot-open", { snapshotId: "valid" });
+    await assertRejects(
+      () =>
+        client.request("snapshot-query", {
+          snapshotId: "valid",
+          sql: "SELECT 1",
+          current: "true",
+        }),
+      Error,
+      "boolean",
+    );
+    await assertRejects(
+      () =>
+        client.request("snapshot-query", {
+          snapshotId: "valid",
+          sql: "SELECT 1",
+          params: {},
+        }),
+      Error,
+      "array",
+    );
+    await assertRejects(
+      () => client.request("snapshot-close", { snapshotId: "wrong" }),
+      Error,
+      "does not match",
+    );
+    assertEquals(
+      await client.request("snapshot-query", {
+        snapshotId: "valid",
+        sql: "SELECT 42 AS value",
+      }),
+      { rows: [{ value: 42 }] },
+    );
+    await client.request("snapshot-close", { snapshotId: "valid" });
+  } finally {
+    await client.close();
+  }
+});
 const pgUrl = Deno.env.get("DB_URL_PG");
 Deno.test({
   name: "pooled snapshot frames progress despite unrelated timed-out checkout",

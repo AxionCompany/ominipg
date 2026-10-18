@@ -1,5 +1,6 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { Ominipg, type OminipgTransaction } from "../src/client/index.ts";
+import { createPGliteProvider } from "../src/providers/pglite.ts";
 import { createPgProvider } from "../src/providers/pg.ts";
 
 function gate() {
@@ -25,6 +26,132 @@ async function deadline<T>(work: Promise<T>): Promise<T> {
     clearTimeout(timer);
   }
 }
+function create() {
+  return Ominipg.connect({
+    url: ":memory:",
+    pgliteProvider: createPGliteProvider(),
+  });
+}
+Deno.test("native client snapshot returns local computation and seals retained reads", async () => {
+  const db = await create();
+  let retained: OminipgTransaction | undefined;
+  try {
+    const answer = await db.withReadSnapshot(async (scope) => {
+      assertEquals(scope.kind, "exclusive");
+      retained = scope.snapshot;
+      const { rows } = await scope.snapshot.query<{ value: number }>(
+        "SELECT 42 AS value",
+      );
+      await assertRejects(
+        () => db.withReadSnapshot(() => 0),
+        Error,
+        "already active",
+      );
+      return rows[0].value + 1;
+    });
+    assertEquals(answer, 43);
+    await assertRejects(() => retained!.query("SELECT 1"), Error, "closed");
+    assertEquals((await db.query("SELECT 44 AS value")).rows, [{ value: 44 }]);
+  } finally {
+    await db.close();
+  }
+});
+Deno.test("native snapshot callback failure preserves error and ordinary database use", async () => {
+  const db = await create();
+  const failure = new Error("callback failed");
+  try {
+    const error = await assertRejects(
+      () =>
+        db.withReadSnapshot(async ({ snapshot }) => {
+          await snapshot.query("SELECT 1");
+          throw failure;
+        }),
+      Error,
+      failure.message,
+    );
+    assertEquals(error, failure);
+    assertEquals((await db.query("SELECT 42 AS value")).rows, [{ value: 42 }]);
+  } finally {
+    await db.close();
+  }
+});
+Deno.test("ordinary native query waits behind callback snapshot without entering its transaction", async () => {
+  const db = await create();
+  const entered = gate(), release = gate();
+  let work: Promise<unknown> | undefined,
+    ordinary: Promise<unknown> | undefined;
+  try {
+    work = db.withReadSnapshot(async ({ snapshot }) => {
+      await snapshot.query("SELECT 1");
+      entered.resolve();
+      await release.promise;
+    });
+    await entered.promise;
+    let done = false;
+    ordinary = db.query("SELECT 42 AS value").then((r) => {
+      done = true;
+      return r;
+    });
+    await Promise.resolve();
+    assertEquals(done, false);
+    release.resolve();
+    await work;
+    assertEquals(await ordinary, { rows: [{ value: 42 }] });
+  } finally {
+    release.resolve();
+    await work?.catch(() => {});
+    await ordinary?.catch(() => {});
+    await db.close();
+  }
+});
+Deno.test("snapshot abort releases native resource without waiting local callback computation", async () => {
+  const db = await create();
+  const entered = gate(), release = gate();
+  const controller = new AbortController();
+  const reason = new Error("cancel snapshot");
+  let retained: OminipgTransaction | undefined;
+  const work = db.withReadSnapshot(async ({ snapshot }) => {
+    retained = snapshot;
+    await snapshot.query("SELECT 1");
+    entered.resolve();
+    await release.promise;
+    return 42;
+  }, { signal: controller.signal });
+  const observed = assertRejects(() => work, Error, reason.message);
+  try {
+    await entered.promise;
+    controller.abort(reason);
+    assertEquals(await deadline(observed), reason);
+    await assertRejects(() => retained!.query("SELECT 1"), Error, "closed");
+    assertEquals((await db.query("SELECT 43 AS value")).rows, [{ value: 43 }]);
+  } finally {
+    release.resolve();
+    await work.catch(() => {});
+    await db.close();
+  }
+});
+Deno.test("database close aborts a held snapshot callback before its exclusive queue drain", async () => {
+  const db = await create();
+  const entered = gate(), release = gate();
+  const work = db.withReadSnapshot(async ({ snapshot }) => {
+    await snapshot.query("SELECT 1");
+    entered.resolve();
+    await release.promise;
+  });
+  const observed = assertRejects(() => work, Error, "closed");
+  let closing: Promise<void> | undefined;
+  try {
+    await entered.promise;
+    closing = db.close();
+    await deadline(observed);
+    await deadline(closing);
+  } finally {
+    release.resolve();
+    await work.catch(() => {});
+    await closing?.catch(() => {});
+    await db.close();
+  }
+});
 const pgUrl = Deno.env.get("DB_URL_PG");
 Deno.test({
   name:
@@ -272,7 +399,7 @@ Deno.test("throwing listener registration or removal cannot latch snapshot admis
   }
 });
 Deno.test("reentrant signal getter cannot overwrite an inner snapshot's close controller", async () => {
-  const db = await pooledFixture();
+  const db = await create();
   const entered = gate(), release = gate(), controller = new AbortController();
   let inner: Promise<unknown> | undefined;
   let observedInner: Promise<unknown> | undefined;
@@ -328,7 +455,7 @@ Deno.test("getter-triggered database close prevents a later snapshot claim", asy
 });
 
 Deno.test("snapshot cleanup observation is separate from value and callback failure", async () => {
-  const db = await pooledFixture();
+  const db = await create();
   const reports: string[] = [];
   const failure = new Error("callback rejected");
   try {
@@ -467,7 +594,7 @@ Deno.test("failed reset with confirmed discard still reports confirmed cleanup",
 });
 
 Deno.test("cleanup observer can cancel returned value without changing physical outcome", async () => {
-  const db = await pooledFixture(), controller = new AbortController();
+  const db = await create(), controller = new AbortController();
   const reason = new Error("cancelled after cleanup");
   const reports: string[] = [];
   try {
