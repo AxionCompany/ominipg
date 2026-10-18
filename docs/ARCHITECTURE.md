@@ -476,3 +476,21 @@ driver and network model.
 - [Migrating to 0.9](./MIGRATION_0_9.md)
 - [Sync](./SYNC.md)
 - [PostgreSQL notifications](./NOTIFICATIONS.md)
+
+### Snapshot cleanup outcome
+
+The optional `withReadSnapshot` cleanup observer receives `confirmed` or
+`unknown`, independently of the callback's returned value or thrown error.
+Confirmation means this invocation submitted no snapshot open, or its exact
+snapshot-close acknowledgement succeeded after admitted work drained. A failed
+reset followed by a confirmed client discard is still confirmed cleanup.
+Unconfirmed return/close remains unknown; error text, error classes and callback
+entry alone do not establish release.
+
+The observer is captured once and called once after controller/listener cleanup.
+Observer exceptions or rejected observer promises do not replace the original
+scope outcome. Cancellation is checked again before exposing a successful value.
+Consumers must wait for the actual scoped operation to settle as well as record
+the observation; missing observation is unknown. This proves release of this
+scope only, never current application authority, safe mutation replay, or global
+database shutdown. No wire operation or additional resource registry is added.

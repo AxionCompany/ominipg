@@ -254,6 +254,7 @@ Deno.test({
 });
 async function pooledFixture(
   hook: (sql: string) => Promise<void> = () => Promise.resolve(),
+  releaseHook: () => void = () => {},
 ) {
   type Client = import("../src/shared/types.ts").PgPoolClient;
   class Pool {
@@ -263,7 +264,9 @@ async function pooledFixture(
           await hook(sql);
           return { rows: [{ value: 42 }] };
         },
-        release() {},
+        release() {
+          releaseHook();
+        },
         on: () => value,
         removeListener: () => value,
       };
@@ -448,5 +451,189 @@ Deno.test("getter-triggered database close prevents a later snapshot claim", asy
     await closing;
   } finally {
     await db.close();
+  }
+});
+
+Deno.test("snapshot cleanup observation is separate from value and callback failure", async () => {
+  const db = await create();
+  const reports: string[] = [];
+  const failure = new Error("callback rejected");
+  try {
+    assertEquals(
+      await db.withReadSnapshot(() => 42, {
+        onCleanup: (value) => {
+          reports.push(value);
+        },
+      }),
+      42,
+    );
+    assertEquals(
+      await assertRejects(() =>
+        db.withReadSnapshot(() => {
+          throw failure;
+        }, {
+          onCleanup: (value) => {
+            reports.push(value);
+          },
+        })
+      ),
+      failure,
+    );
+    assertEquals(reports, ["confirmed", "confirmed"]);
+    assertEquals(
+      await db.withReadSnapshot(() => 43, {
+        onCleanup() {
+          throw new Error("observer failed");
+        },
+      }),
+      43,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+Deno.test("capacity refusal reports confirmed cleanup and permits later admission", async () => {
+  const db = await pooledFixture();
+  const entered = gate(), release = gate();
+  const reports: string[] = [];
+  const ordinary = db.transaction(async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  try {
+    await entered.promise;
+    await assertRejects(() =>
+      db.withReadSnapshot(() => 42, {
+        onCleanup: (value) => {
+          reports.push(value);
+        },
+      })
+    );
+    assertEquals(reports, ["confirmed"]);
+    release.resolve();
+    await ordinary;
+    assertEquals(
+      await db.withReadSnapshot(() => 43, {
+        onCleanup: (value) => {
+          reports.push(value);
+        },
+      }),
+      43,
+    );
+    assertEquals(reports, ["confirmed", "confirmed"]);
+  } finally {
+    release.resolve();
+    await ordinary.catch(() => {});
+    await db.close();
+  }
+});
+
+for (const phase of ["query", "rollback"] as const) {
+  Deno.test(`cleanup observation waits for actual ${phase} drain`, async () => {
+    const entered = gate(),
+      release = gate(),
+      controller = new AbortController();
+    const reports: string[] = [];
+    const reason = new Error("cancelled held query");
+    const db = await pooledFixture(async (sql) => {
+      if (sql === (phase === "query" ? "SELECT held" : "ROLLBACK")) {
+        entered.resolve();
+        await release.promise;
+      }
+    });
+    const work = outcome(db.withReadSnapshot(async (scope) => {
+      await scope.snapshot.query(
+        phase === "query" ? "SELECT held" : "SELECT 42",
+      );
+      return 42;
+    }, {
+      signal: controller.signal,
+      onCleanup: (value) => {
+        reports.push(value);
+      },
+    }));
+    try {
+      await entered.promise;
+      if (phase === "query") controller.abort(reason);
+      await new Promise((done) => setTimeout(done, 10));
+      assertEquals(reports, []);
+      release.resolve();
+      const result = await work;
+      assertEquals(result.ok, phase === "rollback");
+      if (!result.ok) assertEquals(result.error, reason);
+      assertEquals(reports, ["confirmed"]);
+    } finally {
+      release.resolve();
+      await work;
+      await db.close();
+    }
+  });
+}
+
+Deno.test("failed reset with confirmed discard still reports confirmed cleanup", async () => {
+  const reports: string[] = [];
+  const db = await pooledFixture((sql) =>
+    sql === "ROLLBACK"
+      ? Promise.reject(new Error("rollback fault"))
+      : Promise.resolve()
+  );
+  try {
+    assertEquals(
+      await db.withReadSnapshot(() => 42, {
+        onCleanup: (value) => {
+          reports.push(value);
+        },
+      }),
+      42,
+    );
+    assertEquals(reports, ["confirmed"]);
+  } finally {
+    await db.close().catch(() => {});
+  }
+});
+
+Deno.test("cleanup observer can cancel returned value without changing physical outcome", async () => {
+  const db = await create(), controller = new AbortController();
+  const reason = new Error("cancelled after cleanup");
+  const reports: string[] = [];
+  try {
+    assertEquals(
+      await assertRejects(() =>
+        db.withReadSnapshot(() => 42, {
+          signal: controller.signal,
+          onCleanup(value) {
+            reports.push(value);
+            controller.abort(reason);
+          },
+        })
+      ),
+      reason,
+    );
+    assertEquals(reports, ["confirmed"]);
+    assertEquals(await db.withReadSnapshot(() => 43), 43);
+  } finally {
+    await db.close();
+  }
+});
+
+Deno.test("unconfirmed client return reports unknown even when callback succeeded", async () => {
+  const reports: string[] = [];
+  let fail = false;
+  const db = await pooledFixture(undefined, () => {
+    if (fail) throw new Error("return fault");
+  });
+  try {
+    fail = true;
+    await assertRejects(() =>
+      db.withReadSnapshot(() => 42, {
+        onCleanup(value) {
+          reports.push(value);
+        },
+      })
+    );
+    assertEquals(reports, ["unknown"]);
+  } finally {
+    await db.close().catch(() => {});
   }
 });

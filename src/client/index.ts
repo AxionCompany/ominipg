@@ -150,6 +150,10 @@ export type OminipgTransaction = Readonly<{
   ): Promise<{ rows: TRow[] }>;
 }>;
 
+/** Per-invocation resource outcome, independent of callback/result authority.
+ * Confirmed means no open was submitted, or exact snapshot-close was acknowledged. */
+export type OminipgSnapshotCleanup = "confirmed" | "unknown";
+
 /** Backend snapshot scope for trusted SQL. Snapshot executors accept compiled
  * reads only; never send transaction-control or session-changing SQL through
  * them. Current-state transactions belong to the reserved control connection. */
@@ -474,38 +478,69 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * Cancellation and database close seal handles and await raw cleanup. */
   public async withReadSnapshot<T>(
     callback: (scope: OminipgReadSnapshot) => T | Promise<T>,
-    options: Readonly<{ signal?: AbortSignal }> = {},
+    options: Readonly<{
+      signal?: AbortSignal;
+      /** Captured synchronous observation after actual resource cleanup. Observer
+       * failures are ignored; missing observation is never cleanup proof. */
+      onCleanup?: (outcome: OminipgSnapshotCleanup) => void;
+    }> = {},
   ): Promise<T> {
-    this.assertOpen();
-    if (!this.snapshotProtocol) {
-      throw new Error("Snapshot protocol is unavailable.");
-    }
-    if (this.snapshotController) {
-      throw new Error("A read snapshot is already active.");
-    }
-    const signal = options.signal;
-    signal?.throwIfAborted();
-    const controller = new AbortController();
-    // Accessors or custom signal methods can reenter before the claim. Never
-    // overwrite a scope started by that code or admit after it closed the DB.
-    this.assertOpen();
-    if (this.snapshotController) {
-      throw new Error("A read snapshot is already active.");
-    }
-    this.snapshotController = controller;
-    const cancel = () => controller.abort(signal?.reason);
+    const observer = options.onCleanup;
+    let cleanup: OminipgSnapshotCleanup = "confirmed";
+    let reported = false;
+    const report = () => {
+      if (reported) return;
+      reported = true;
+      try {
+        const result = observer?.(cleanup);
+        if (result !== undefined) void Promise.resolve(result).catch(() => {});
+      } catch { /* Observation never replaces the scope's value or failure. */ }
+    };
     try {
-      signal?.addEventListener("abort", cancel, { once: true });
-      if (signal?.aborted) cancel();
-      const run = () => this.snapshotScope(callback, controller.signal);
-      return await (this.concurrent
-        ? this.runConcurrent(run)
-        : this.runExclusive(run));
-    } finally {
-      if (this.snapshotController === controller) {
-        this.snapshotController = undefined;
+      if (observer !== undefined && typeof observer !== "function") {
+        throw new TypeError("Snapshot cleanup observer must be a function.");
       }
-      signal?.removeEventListener("abort", cancel);
+      this.assertOpen();
+      if (!this.snapshotProtocol) {
+        throw new Error("Snapshot protocol is unavailable.");
+      }
+      if (this.snapshotController) {
+        throw new Error("A read snapshot is already active.");
+      }
+      const signal = options.signal;
+      signal?.throwIfAborted();
+      const controller = new AbortController();
+      // Accessors or custom signal methods can reenter before the claim. Never
+      // overwrite a scope started by that code or admit after it closed the DB.
+      this.assertOpen();
+      if (this.snapshotController) {
+        throw new Error("A read snapshot is already active.");
+      }
+      this.snapshotController = controller;
+      const cancel = () => controller.abort(signal?.reason);
+      let result!: T;
+      try {
+        signal?.addEventListener("abort", cancel, { once: true });
+        if (signal?.aborted) cancel();
+        const run = () =>
+          this.snapshotScope(callback, controller.signal, (value) => {
+            cleanup = value;
+          });
+        result = await (this.concurrent
+          ? this.runConcurrent(run)
+          : this.runExclusive(run));
+      } finally {
+        if (this.snapshotController === controller) {
+          this.snapshotController = undefined;
+        }
+        signal?.removeEventListener("abort", cancel);
+      }
+      report();
+      signal?.throwIfAborted();
+      return result;
+    } catch (error) {
+      report();
+      throw error;
     }
   }
 
@@ -769,6 +804,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   private async snapshotScope<T>(
     callback: (scope: OminipgReadSnapshot) => T | Promise<T>,
     signal: AbortSignal,
+    cleanup: (outcome: OminipgSnapshotCleanup) => void,
   ): Promise<T> {
     signal.throwIfAborted();
     const snapshotId = crypto.randomUUID();
@@ -830,6 +866,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     let failure: unknown;
     let result!: T;
     try {
+      cleanup("unknown");
       const opened = await this.session.request<
         { kind: "exclusive" | "pooled" }
       >(
@@ -888,6 +925,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     active = false;
     try {
       await closeResource();
+      cleanup("confirmed");
     } catch (cleanupError) {
       failure = failed
         ? new AggregateError(
