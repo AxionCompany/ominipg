@@ -485,8 +485,8 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   }
 
   /** Holds a bounded backend read snapshot for trusted compiled SQL.
-   * Use only the supplied executors inside the callback. PostgreSQL reserves
-   * a snapshot/current pair. Nested/concurrent scopes refuse.
+   * Use only the supplied executors inside the callback; ordinary PGlite
+   * operations wait behind this scope. Nested/concurrent scopes refuse.
    * Cancellation and database close seal handles and await raw cleanup. */
   public async withReadSnapshot<T>(
     callback: (scope: OminipgReadSnapshot) => T | Promise<T>,
