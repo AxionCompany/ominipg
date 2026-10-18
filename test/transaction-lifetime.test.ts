@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { assertEquals, assertRejects } from "@std/assert";
 import { Ominipg, type OminipgTransaction } from "../src/client/index.ts";
 import type { PgModule, PgPoolClient } from "../src/shared/types.ts";
@@ -22,10 +23,10 @@ async function fixture(concurrent: boolean, timeout = 1000) {
     connect() {
       const id = ++clientId;
       return Promise.resolve(
-        {
+        Object.assign(new EventEmitter(), {
           query: (sql: string) => query(sql, id),
           release() {},
-        } as unknown as PgPoolClient,
+        }) as unknown as PgPoolClient,
       );
     }
     end() {

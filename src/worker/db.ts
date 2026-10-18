@@ -1,5 +1,6 @@
 import { detectDatabaseType } from "./utils.ts";
 import { transactionControl } from "./transaction-control.ts";
+import { AccountedPgPool } from "./pool-capacity.ts";
 import { applyDefaultLowMemoryPGliteConfig } from "../shared/pglite_config.ts";
 import type {
   LogicalReplicationServiceLike,
@@ -38,6 +39,7 @@ export type EngineDependencies = Readonly<{
   pgliteProvider?: PGliteProvider;
   pgProvider?: PgProvider;
   pgliteConfig?: PGliteConfig;
+  onError?: (error: Error) => void;
   /** Optional, runtime-owned memory probe used only by diagnostic logging. */
   getRssMb?: () => number | null;
 }>;
@@ -69,6 +71,7 @@ export interface EngineState {
   syncStarted: boolean;
   readonly timers: Set<ReturnType<typeof setTimeout>>;
   readonly getRssMb: () => number | null;
+  readonly reportError: (error: Error) => void;
 }
 
 export function createEngineState(
@@ -90,6 +93,7 @@ export function createEngineState(
     syncStarted: false,
     timers: new Set(),
     getRssMb: dependencies.getRssMb ?? (() => null),
+    reportError: dependencies.onError ?? (() => {}),
   };
 }
 
@@ -522,41 +526,85 @@ const DEFAULT_TRANSACTION = "";
 
 class PostgresAdapter implements DatabaseClient {
   private readonly transactions = new Map<string, PgPoolClient>();
+  private readonly opening = new Map<string, Promise<{ rows: unknown[] }>>();
+  private readonly pendingPinned = new Set<Promise<unknown>>();
+  private readonly cleanupFailures: unknown[] = [];
+  private closing = false;
+  private closeTask?: Promise<void>;
 
-  constructor(readonly pool: PgPool) {}
+  constructor(readonly pool: AccountedPgPool) {}
 
   async query(sql: string, params?: unknown[], transaction?: string) {
+    if (this.closing) throw new Error("PostgreSQL adapter is closed.");
     const control = transactionControl(sql);
     const lane = transaction ?? DEFAULT_TRANSACTION;
     if (control.kind === "begin") {
-      if (this.transactions.has(lane)) {
+      if (this.transactions.has(lane) || this.opening.has(lane)) {
         throw new Error("A PostgreSQL transaction is already active.");
       }
-      const client = await this.pool.connect();
-      try {
-        const result = await client.query(sql, params ?? []);
-        this.transactions.set(lane, client);
+      // Register before provider code runs: close owns every admitted open,
+      // including a checkout or BEGIN that has not settled yet.
+      const task = Promise.resolve().then(async () => {
+        const client = await this.pool.connect();
+        let result: { rows: unknown[] };
+        try {
+          result = await client.query(sql, params ?? []);
+        } catch (error) {
+          try {
+            client.release(true);
+          } catch (cleanupError) {
+            if (this.closing) this.cleanupFailures.push(cleanupError);
+            throw new AggregateError(
+              [error, cleanupError],
+              "BEGIN cleanup failed.",
+            );
+          }
+          throw error;
+        }
+        if (this.closing) {
+          // A queued checkout may need an earlier pin to return first. A late
+          // successful open therefore owns its rollback instead of adding a pin.
+          try {
+            await this.returnTransaction(client);
+          } catch (error) {
+            this.cleanupFailures.push(error);
+            throw error;
+          }
+        } else {
+          this.transactions.set(lane, client);
+        }
         return { rows: result.rows };
-      } catch (error) {
-        client.release(true);
-        throw error;
+      });
+      this.opening.set(lane, task);
+      try {
+        return await task;
+      } finally {
+        this.opening.delete(lane);
       }
     }
     const pinned = this.transactions.get(lane);
     if (pinned) {
+      const task = Promise.resolve().then(async () => {
+        try {
+          const result = await pinned.query(sql, params ?? []);
+          if (control.kind === "end" && !control.chain) {
+            this.transactions.delete(lane);
+            pinned.release();
+          }
+          return { rows: result.rows };
+        } catch (error) {
+          if (control.kind === "end") {
+            this.transactions.delete(lane);
+            pinned.release(true);
+          }
+          throw error;
+        }
+      });
+      this.pendingPinned.add(task);
       try {
-        const result = await pinned.query(sql, params ?? []);
-        if (control.kind === "end" && !control.chain) {
-          this.transactions.delete(lane);
-          pinned.release();
-        }
-        return { rows: result.rows };
-      } catch (error) {
-        if (control.kind === "end") {
-          this.transactions.delete(lane);
-          pinned.release(true);
-        }
-        throw error;
+        return await task;
+      } finally {
+        this.pendingPinned.delete(task);
       }
     }
     if (transaction !== undefined) {
@@ -575,20 +623,51 @@ class PostgresAdapter implements DatabaseClient {
     await this.query(sql);
   }
 
-  async close() {
-    const pinned = [...this.transactions.values()];
-    this.transactions.clear();
-    for (const client of pinned) {
-      let destroy = false;
-      try {
-        await client.query("ROLLBACK");
-      } catch {
-        // The connection may already be unavailable during shutdown.
-        destroy = true;
-      }
-      client.release(destroy);
+  private async returnTransaction(client: PgPoolClient): Promise<void> {
+    let destroy = false;
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Confirmed discard suffices when rollback itself is unavailable.
+      destroy = true;
     }
-    await this.pool.end();
+    client.release(destroy);
+  }
+
+  close(): Promise<void> {
+    if (this.closeTask) return this.closeTask;
+    this.closing = true;
+    return this.closeTask = Promise.resolve().then(async () => {
+      // Let admitted terminal SQL update pin ownership before collecting it.
+      await Promise.allSettled([...this.pendingPinned]);
+      for (const [lane, client] of this.transactions) {
+        try {
+          await this.returnTransaction(client);
+        } catch (error) {
+          // The pool retains failed physical returns for its end() retry.
+          this.cleanupFailures.push(error);
+        }
+        this.transactions.delete(lane);
+      }
+      // Pool shutdown retries failed returns, which can unblock queued opens.
+      // It also seals checkout admission and returns late checkouts directly.
+      // Do not wait for those opens before starting the owned return retries.
+      const opened = Promise.allSettled([...this.opening.values()]);
+      try {
+        await this.pool.end();
+        await opened;
+      } catch (error) {
+        // Unknown return ownership remains retained by the pool. Its failed
+        // shutdown must remain observable even if queued opens cannot drain.
+        this.cleanupFailures.push(error);
+      }
+      if (this.cleanupFailures.length) {
+        throw new AggregateError(
+          this.cleanupFailures,
+          "PostgreSQL shutdown cleanup failed.",
+        );
+      }
+    });
   }
 }
 
@@ -597,21 +676,32 @@ async function initializePostgreSQL(
   provider?: PgProvider,
   max = 5,
   statementTimeoutMs?: number,
+  reportError?: (error: Error) => void,
 ): Promise<PostgresAdapter> {
   const pg = await loadPgModule(provider);
-  const pool = new pg.Pool({
-    connectionString: url,
+  const pool = new AccountedPgPool(
+    new pg.Pool({
+      connectionString: url,
+      max,
+      ...(statementTimeoutMs === undefined
+        ? {}
+        : { statement_timeout: statementTimeoutMs }),
+    }),
     max,
-    ...(statementTimeoutMs === undefined
-      ? {}
-      : { statement_timeout: statementTimeoutMs }),
-  });
-  const client = await pool.connect();
+    reportError,
+  );
   try {
-    await client.query("SELECT 1"); // Test connection
-    return new PostgresAdapter(pool);
-  } finally {
-    client.release();
+    const client = await pool.connect();
+    try {
+      await client.query("SELECT 1"); // Test connection
+      return new PostgresAdapter(pool);
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    // The engine cannot close an adapter that initialization never returned.
+    await pool.end().catch(() => {});
+    throw error;
   }
 }
 
@@ -644,6 +734,7 @@ export async function initConnections(
       state.pgProvider,
       cfg.pgPoolMax ?? 5,
       cfg.statementTimeoutMs,
+      state.reportError,
     );
     state.mainDb = adapter;
     state.mainPool = adapter.pool;
@@ -656,7 +747,11 @@ export async function initConnections(
       );
     }
     const pg = await loadPgModule(state.pgProvider);
-    state.syncPool = new pg.Pool({ connectionString: cfg.syncUrl, max: 1 });
+    state.syncPool = new AccountedPgPool(
+      new pg.Pool({ connectionString: cfg.syncUrl, max: 1 }),
+      1,
+      state.reportError,
+    );
   }
 }
 

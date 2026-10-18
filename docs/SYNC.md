@@ -228,6 +228,13 @@ try {
 }
 ```
 
+Native PostgreSQL client/pool faults use the existing `error` event; the remote
+sync pool observes them throughout checkout and shutdown. During initial sync,
+return of the remote client is attempted even if restoring the local replication
+role fails; an unsuccessful return retains its cleanup charge. Query rejection
+and asynchronous diagnostics are separate signals: a lost COMMIT acknowledgement
+still requires outcome-aware reconciliation rather than an unconditional retry.
+
 Explicit push failures reject `sync()` and leave the outbox cursor unchanged so
 the batch can be retried. Replication-service errors are logged by the workload;
 applications should monitor process logs and database slot health in addition to

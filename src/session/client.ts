@@ -453,6 +453,8 @@ export class OminipgSessionClient {
     const error = new Error(frame.message);
     if (frame.subscriptionId) {
       this.subscriptions.get(frame.subscriptionId)?.emitError(error);
+      // The engine sends the same fault on its separate global error route.
+      return;
     }
     this.onError(error);
   }

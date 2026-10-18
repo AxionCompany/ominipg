@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   createEngineState,
@@ -14,7 +15,7 @@ async function fixture() {
   let fail: string | undefined;
   class Pool {
     connect() {
-      const client = {
+      const client = Object.assign(new EventEmitter(), {
         queries: [] as string[],
         releases: [] as boolean[],
         query(sql: string) {
@@ -27,7 +28,7 @@ async function fixture() {
         release(destroy = false) {
           this.releases.push(destroy);
         },
-      };
+      });
       clients.push(client);
       return Promise.resolve(client as unknown as PgPoolClient);
     }

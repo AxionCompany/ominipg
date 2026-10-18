@@ -1,8 +1,4 @@
-import {
-  assertEquals,
-  assertRejects,
-  assertStringIncludes,
-} from "jsr:@std/assert@1.0.13";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Ominipg } from "../src/client/index.ts";
 import type {
   PgModule,
@@ -19,9 +15,11 @@ class FakeClient {
   released = false;
   destroyed = false;
 
-  async query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }> {
+  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }> {
     this.queries.push({ sql, params });
-    return { rows: sql === "SELECT 1" ? [{ "?column?": 1 }] : [] };
+    return Promise.resolve({
+      rows: sql === "SELECT 1" ? [{ "?column?": 1 }] : [],
+    });
   }
 
   release(destroy = false): void {
@@ -69,14 +67,15 @@ class FakePool implements PgPool {
     FakePool.latest = this;
   }
 
-  async connect(): Promise<PgPoolClient> {
+  connect(): Promise<PgPoolClient> {
     const client = new FakeClient();
     this.clients.push(client);
-    return client as unknown as PgPoolClient;
+    return Promise.resolve(client as unknown as PgPoolClient);
   }
 
-  async end(): Promise<void> {
+  end(): Promise<void> {
     this.ended = true;
+    return Promise.resolve();
   }
 
   listenerClient(): FakeClient {
@@ -90,9 +89,10 @@ class FakePool implements PgPool {
 }
 
 const provider = {
-  loadPg: async (): Promise<PgModule> => ({
-    Pool: FakePool as unknown as PgModule["Pool"],
-  }),
+  loadPg: (): Promise<PgModule> =>
+    Promise.resolve({
+      Pool: FakePool as unknown as PgModule["Pool"],
+    }),
 };
 
 const delay = (milliseconds: number) =>
@@ -263,11 +263,14 @@ Deno.test("listener reconnects and reissues active LISTEN channels", async () =>
   const pool = FakePool.latest!;
   const received: string[] = [];
   const states: string[] = [];
-  db.on("error", () => {});
+  const globalErrors: Error[] = [];
+  const subscriptionErrors: Error[] = [];
+  db.on("error", (error) => globalErrors.push(error));
   const subscription = await db.listen("events", ({ payload }) => {
     received.push(payload ?? "");
   });
   subscription.onStateChange((state) => states.push(state));
+  subscription.onError((error) => subscriptionErrors.push(error));
 
   const original = pool.listenerClient();
   original.emit("error", new Error("connection reset"));
@@ -284,6 +287,12 @@ Deno.test("listener reconnects and reissues active LISTEN channels", async () =>
   await delay(0);
   assertEquals(received, ["ok"]);
   assertEquals(states, ["reconnecting", "connected"]);
+  assertEquals(globalErrors.map((error) => error.message), [
+    "connection reset",
+  ]);
+  assertEquals(subscriptionErrors.map((error) => error.message), [
+    "connection reset",
+  ]);
 
   await db.close();
 });

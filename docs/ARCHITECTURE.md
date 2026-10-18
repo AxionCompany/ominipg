@@ -345,3 +345,14 @@ driver and network model.
 - [Migrating to 0.9](./MIGRATION_0_9.md)
 - [Sync](./SYNC.md)
 - [PostgreSQL notifications](./NOTIFICATIONS.md)
+
+### PostgreSQL provider ownership and shutdown
+
+The shared checkout boundary observes provider pool and client faults. A failed
+client stays unusable until return, and a throwing return retains its cleanup
+handle and capacity charge. Error observers cannot change SQL outcomes. Engine
+shutdown seals new transaction admission, drains admitted pinned SQL, and
+returns late successful opens directly so queued checkouts cannot wait on
+retained pins. It attempts every rollback/return plus pool shutdown before
+aggregating cleanup failures. Confirmed discard is sufficient when rollback is
+unavailable; failed physical returns remain owned by the pool.

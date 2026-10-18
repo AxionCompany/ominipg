@@ -20,11 +20,7 @@ import { getDiagnosticInfo } from "./diagnostics.ts";
 import { synchronizeSequences } from "./sync/sequences.ts";
 import { pushBatch } from "./sync/pusher.ts";
 
-export type OminipgEngineDependencies =
-  & EngineDependencies
-  & Readonly<{
-    onError?: (error: Error) => void;
-  }>;
+export type OminipgEngineDependencies = EngineDependencies;
 
 /** A single stateful database engine owned by one Oxian workload session. */
 export class OminipgEngine {
@@ -37,8 +33,22 @@ export class OminipgEngine {
   private closePromise?: Promise<void>;
 
   constructor(dependencies: OminipgEngineDependencies = {}) {
-    this.state = createEngineState(dependencies);
-    this.reportError = dependencies.onError ?? (() => {});
+    // A native client fault may also reach its notification subscription.
+    // Report that same error once while keeping subscription recovery intact.
+    const reported = new WeakSet<Error>();
+    this.reportError = (error) => {
+      if (reported.has(error)) return;
+      reported.add(error);
+      try {
+        void Promise.resolve(dependencies.onError?.(error)).catch(() => {});
+      } catch {
+        // Diagnostics must not change SQL outcomes or cleanup.
+      }
+    };
+    this.state = createEngineState({
+      ...dependencies,
+      onError: this.reportError,
+    });
   }
 
   async initialize(config: OminipgEngineConfig): Promise<void> {
