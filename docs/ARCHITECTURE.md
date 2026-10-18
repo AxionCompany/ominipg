@@ -245,9 +245,30 @@ an ordinary raw SQL batch is outside the supported managed-lane contract and
 remains unclassified. Broader raw batching would require provider-level
 transaction-state observation; this classifier does not provide that guarantee.
 
-A transaction is session-scoped, not an application-wide lock. The client owns
-an exclusive operation lane for the entire callback, so unrelated concurrent
-calls on the same instance wait until commit or rollback.
+The callback executor is valid only while its callback is active. Both `query`
+and `queryRaw` refuse retained calls after callback success or failure,
+including while the terminal acknowledgement is still pending. Already-admitted
+statements are drained before terminal SQL. PGlite and PostgreSQL share this
+lifecycle; PGlite serializes whole callbacks, while PostgreSQL uses an
+independent pinned lane per callback and can run other queries or transactions
+concurrently.
+
+`BEGIN` is covered by cleanup too: a request timeout can conceal a successfully
+opened transaction. The existing session gate drains its raw response before a
+rollback is sent on the same lane. If rollback fails or cannot be confirmed, the
+client refuses further use and closes its workload session. Cleanup bypasses the
+public close queue so it cannot wait on its own active transaction. The original
+transaction error remains primary; `close()` retains any cleanup failure.
+
+A timed-out `COMMIT` is still an unknown outcome. Attempting cleanup does not
+prove that business writes rolled back, and callers must not blindly replay
+them. Timeout rejection is not proof of raw resource release: cleanup can remain
+pending while an accepted database request drains.
+
+These guards do not provide distributed snapshot authorization, a reserved pool
+budget, database-wide PGlite exclusivity in the presence of background sync, or
+snapshot expiry. Those require separate host/backend contracts. A transaction is
+session-scoped, not an application-wide lock.
 
 ### Sync
 
