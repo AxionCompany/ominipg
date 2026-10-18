@@ -356,3 +356,36 @@ returns late successful opens directly so queued checkouts cannot wait on
 retained pins. It attempts every rollback/return plus pool shutdown before
 aggregating cleanup failures. Confirmed discard is sufficient when rollback is
 unavailable; failed physical returns remain owned by the pool.
+
+### PostgreSQL read snapshots
+
+`withReadSnapshot(callback, { signal, onCleanup })` opens one owned read-only
+`REPEATABLE READ` snapshot. In a pooled scope,
+`scope.snapshot.query(sql, params)` reads historical rows and
+`scope.current(fn)` serializes independent current transactions. Its executors
+accept trusted compiled SQL; arbitrary transaction control or session-changing
+SQL is outside the read-executor contract.
+
+The existing shared pool reserves a snapshot/current pair within `pgPoolMax`.
+Ordinary queries, transaction pins, and LISTEN pins count toward the same limit.
+Reservation refuses before BEGIN if two connections cannot fit. A two-connection
+pool can hold one snapshot while ordinary work waits for its release.
+
+Callback settlement or abort seals the scope, drains admitted SQL and current
+transactions, and returns the pair. Retained executors refuse new work. Aborted
+queries cannot disclose late results, and cancellation is checked before the
+callback's result is exposed. Terminal session EOF or transport failure cancels
+a held callback even when no SQL request is pending.
+
+`onCleanup` is captured once and called exactly once with `confirmed` or
+`unknown`, independently of the callback's value or error. Confirmation requires
+either no submitted open or the exact close acknowledgement after raw drain. A
+failed return or lost close acknowledgement remains unknown and retires the
+session. Observer failures do not replace the operation outcome. The library
+sets no idle or lifetime timer; the owner supplies cancellation and
+authorization policy.
+
+The internal snapshot-open/query/close protocol carries one bounded resource.
+Graceful EOF and explicit close release snapshot pins before waiting on accepted
+ordinary checkouts. This release enables PostgreSQL snapshots; native PGlite
+snapshots are a separately verified provider capability.
