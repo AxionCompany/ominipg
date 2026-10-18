@@ -40,6 +40,10 @@ asynchronous `ominipg.session.v1` event frames.
   callback failure to interrupt another subscription.
 - A handler exception is reported to the subscription and Ominipg `error`
   listeners; it does not interrupt other handlers.
+- The same native Error object observed through pool/listener paths is reported
+  once globally and to each affected subscription. Different errors from one
+  outage remain distinct. Scoped error frames do not duplicate global events;
+  session diagnostic delivery is best-effort.
 - `db.close()` closes subscriptions and the listener hub before ending the query
   pool.
 

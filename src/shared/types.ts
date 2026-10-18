@@ -73,6 +73,9 @@ export interface PgNotificationMessage {
 }
 
 export interface PgPool {
+  /** Native providers may emit asynchronous faults from idle clients. */
+  on?(event: "error", listener: (error: Error) => void): this;
+  removeListener?(event: "error", listener: (error: Error) => void): this;
   connect(): Promise<PgPoolClient>;
   end(): Promise<void>;
   options?: { connectionString?: string; max?: number };

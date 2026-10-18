@@ -99,7 +99,11 @@ export async function performInitialSync(
             UPDATE _sync_state SET last_pull = NOW() WHERE id = 1
         `);
   } finally {
-    await mainDb.exec(`SET session_replication_role = 'origin'`);
-    client.release();
+    try {
+      await mainDb.exec(`SET session_replication_role = 'origin'`);
+    } finally {
+      // A failed local reset must not strand the independently borrowed remote.
+      client.release();
+    }
   }
 }

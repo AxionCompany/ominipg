@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { assertEquals, assertRejects } from "@std/assert";
 import { createEmbeddedOminipgSession } from "../src/session/embedded.ts";
 import { openOminipgSession } from "../src/session/client.ts";
@@ -21,7 +22,7 @@ for (const continueReading of [false, true]) {
       function client(): PgPoolClient {
         occupied = true;
         let released = false;
-        return {
+        return Object.assign(new EventEmitter(), {
           query(sql: string) {
             operations.push(sql);
             return Promise.resolve({ rows: [] });
@@ -35,7 +36,7 @@ for (const continueReading of [false, true]) {
             const next = waiting.shift();
             if (next) next.resolve(client());
           },
-        } as unknown as PgPoolClient;
+        }) as unknown as PgPoolClient;
       }
       class Pool {
         connect() {
@@ -126,14 +127,14 @@ for (const defaultLane of [false, true]) {
     const waiting = gate();
     class Pool {
       connect() {
-        return Promise.resolve({
+        return Promise.resolve(Object.assign(new EventEmitter(), {
           async query(sql: string) {
             operations.push(sql);
             if (sql === "SELECT slow") await release.promise;
             return { rows: [] };
           },
           release() {},
-        } as unknown as PgPoolClient);
+        }) as unknown as PgPoolClient);
       }
       end() {
         return Promise.resolve();
@@ -269,7 +270,7 @@ Deno.test("queued session payload cannot change the transaction scope after admi
   const operations: string[] = [];
   class Pool {
     connect() {
-      return Promise.resolve({
+      return Promise.resolve(Object.assign(new EventEmitter(), {
         async query(sql: string) {
           operations.push(sql);
           if (sql === "SELECT holdA") await a.promise;
@@ -277,7 +278,7 @@ Deno.test("queued session payload cannot change the transaction scope after admi
           return { rows: [] };
         },
         release() {},
-      } as unknown as PgPoolClient);
+      }) as unknown as PgPoolClient);
     }
     end() {
       return Promise.resolve();
@@ -509,12 +510,12 @@ Deno.test("unlisten waits for its own pending listen before starting a deadline"
 Deno.test("unsupported request encoding leaves no pending raw request or timer", async () => {
   class Pool {
     connect() {
-      return Promise.resolve({
+      return Promise.resolve(Object.assign(new EventEmitter(), {
         query() {
           return Promise.resolve({ rows: [] });
         },
         release() {},
-      } as unknown as PgPoolClient);
+      }) as unknown as PgPoolClient);
     }
     end() {
       return Promise.resolve();
