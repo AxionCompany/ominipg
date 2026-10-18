@@ -191,6 +191,8 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   private concurrent = false;
   private readonly concurrentOperations = new Set<Promise<void>>();
   private closePromise?: Promise<void>;
+  private sessionClosePromise?: Promise<void>;
+  private poisoned = false;
   private closing = false;
   private closed = false;
   public crud?: unknown;
@@ -440,35 +442,14 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     callback: (transaction: OminipgTransaction) => T | Promise<T>,
   ): Promise<T> {
     this.assertOpen();
-    if (this.concurrent) {
-      return await this.runConcurrent(() => this.laneTransaction(callback));
-    }
-    return await this.runExclusive(async () => {
-      const transaction: OminipgTransaction = {
-        query: <TRow extends Record<string, unknown> = Record<string, unknown>>(
-          sql: string,
-          params?: unknown[],
-        ) => this.queryInLane<TRow>(sql, params),
-        queryRaw: <
-          TRow extends Record<string, unknown> = Record<string, unknown>,
-        >(sql: string, params?: unknown[]) =>
-          this.queryInLane<TRow>(sql, params),
-      };
-      await this.queryInLane("BEGIN");
-      try {
-        const result = await callback(transaction);
-        await this.queryInLane("COMMIT");
-        return result;
-      } catch (error) {
-        await this.session.whenIdle();
-        try {
-          await this.queryInLane("ROLLBACK");
-        } catch {
-          // Preserve the callback/commit failure as the primary error.
-        }
-        throw error;
-      }
-    });
+    const run = () =>
+      this.laneTransaction(
+        callback,
+        this.concurrent ? crypto.randomUUID() : undefined,
+      );
+    return await (this.concurrent
+      ? this.runConcurrent(run)
+      : this.runExclusive(run));
   }
 
   /**
@@ -630,17 +611,9 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    * ```
    */
   public async close(): Promise<void> {
-    if (this.closed) return;
     if (this.closePromise) return await this.closePromise;
     this.closing = true;
-    this.closePromise = this.runExclusive(async () => {
-      try {
-        await this.session.close();
-      } finally {
-        this.closed = true;
-        this.emit("close");
-      }
-    });
+    this.closePromise = this.runExclusive(() => this.closeSession());
     return await this.closePromise;
   }
 
@@ -650,29 +623,70 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     }
   }
 
+  /** Direct resource cleanup also works from an active transaction. Calling
+   * public close() there would wait on the transaction's own operation lane. */
+  private closeSession(): Promise<void> {
+    this.closing = true;
+    return this.sessionClosePromise ??= (async () => {
+      try {
+        await this.session.close();
+      } finally {
+        this.closed = true;
+        this.emit("close");
+      }
+    })();
+  }
+
   private async laneTransaction<T>(
     callback: (transaction: OminipgTransaction) => T | Promise<T>,
+    lane?: string,
   ): Promise<T> {
-    const lane = crypto.randomUUID();
+    let active = true;
+    const pending = new Set<Promise<unknown>>();
     const query = <TRow extends Record<string, unknown>>(
       sql: string,
       params?: unknown[],
-    ) => this.queryInLane<TRow>(sql, params, lane);
+    ): Promise<{ rows: TRow[] }> => {
+      if (!active || this.poisoned || this.closed) {
+        return Promise.reject(new Error("Ominipg transaction is closed."));
+      }
+      const result = this.queryInLane<TRow>(sql, params, lane);
+      pending.add(result);
+      void result.then(
+        () => pending.delete(result),
+        () => pending.delete(result),
+      );
+      return result;
+    };
     const transaction: OminipgTransaction = { query, queryRaw: query };
-    await this.queryInLane("BEGIN", undefined, lane);
     try {
-      const result = await callback(transaction);
+      // BEGIN belongs inside cleanup: a timeout may hide a successful remote
+      // open. The session gate drains that request before admitting ROLLBACK.
+      await this.queryInLane("BEGIN", undefined, lane);
+      let result: T;
+      try {
+        result = await callback(transaction);
+      } finally {
+        active = false;
+      }
+      await Promise.all([...pending]);
       await this.queryInLane("COMMIT", undefined, lane);
       return result;
     } catch (error) {
-      // The workload runs a lane in order, so ROLLBACK follows any statement
-      // the callback left in flight.
+      active = false;
+      await Promise.allSettled([...pending]);
       try {
         await this.queryInLane("ROLLBACK", undefined, lane);
       } catch {
-        // Preserve the callback/commit failure as the primary error.
+        // An unproved rollback must not return a possibly live transaction to
+        // service. Retire the session without waiting on our own operation.
+        this.poisoned = true;
+        await this.closeSession().catch(() => {});
       }
+      // COMMIT uncertainty remains uncertainty; rollback cannot undo a commit.
       throw error;
+    } finally {
+      active = false;
     }
   }
 
@@ -683,6 +697,9 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     params?: unknown[],
     transaction?: string,
   ): Promise<{ rows: TRow[] }> {
+    if (this.poisoned || this.closed) {
+      throw new Error("Ominipg instance is closed.");
+    }
     return await this.session.request<{ rows: TRow[] }>("query", {
       sql,
       params,
