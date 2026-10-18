@@ -323,6 +323,33 @@ This is a backend prerequisite. The callback-bound snapshot/control operation,
 private PGlite exclusive certification, stable-generation forwarding and owner
 snapshot authorization/expiry are not activated by this internal reservation.
 
+### PostgreSQL provider fault ownership
+
+The accounted boundary observes native client errors for the whole checkout,
+including the first acquired half of a pending pair, transaction gaps and
+reset/return. A fault latches that borrow closed to later SQL and requests
+client destruction on its eventual return. It does not return capacity early,
+retry a statement or establish the outcome of an uncertain COMMIT. A throwing
+return retains its observer and existing cleanup charge until return succeeds.
+
+Native pool errors from idle clients are observed before the first checkout and
+through pool shutdown. Unknown/failed shutdown retains observation. Both the
+main PostgreSQL pool and the remote sync pool use this boundary; PGlite remains
+an independent in-process default.
+
+Errors travel through the existing engine/workload/session diagnostic route. The
+same native Error object observed through pool/listener paths produces one
+global diagnostic and still reaches the affected subscription error/state
+handlers. Different Error objects from one outage remain distinct, and session
+diagnostic delivery is best-effort. Subscription-specific frames do not repeat
+global delivery. Host diagnostic callbacks that throw or reject cannot interrupt
+resource cleanup. Native SQL promises still reject independently; an error event
+is not a transaction receipt or automatic retry instruction.
+
+Custom PostgreSQL providers must implement the existing client event methods as
+well as query/release. Pools exposing native error events are observed too. No
+new service, worker lease or public topology option is introduced.
+
 ### Internal native PGlite snapshot prerequisite
 
 The native PGlite transaction mutex can hold an exclusive read scope without

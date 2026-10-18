@@ -42,6 +42,7 @@ export type EngineDependencies = Readonly<{
   pgliteProvider?: PGliteProvider;
   pgProvider?: PgProvider;
   pgliteConfig?: PGliteConfig;
+  onError?: (error: Error) => void;
   /** Optional, runtime-owned memory probe used only by diagnostic logging. */
   getRssMb?: () => number | null;
 }>;
@@ -73,6 +74,7 @@ export interface EngineState {
   syncStarted: boolean;
   readonly timers: Set<ReturnType<typeof setTimeout>>;
   readonly getRssMb: () => number | null;
+  readonly reportError: (error: Error) => void;
 }
 
 export function createEngineState(
@@ -94,6 +96,7 @@ export function createEngineState(
     syncStarted: false,
     timers: new Set(),
     getRssMb: dependencies.getRssMb ?? (() => null),
+    reportError: dependencies.onError ?? (() => {}),
   };
 }
 
@@ -662,6 +665,7 @@ async function initializePostgreSQL(
   provider?: PgProvider,
   max = 5,
   statementTimeoutMs?: number,
+  reportError?: (error: Error) => void,
 ): Promise<PostgresAdapter> {
   const pg = await loadPgModule(provider);
   const pool = new AccountedPgPool(
@@ -673,6 +677,7 @@ async function initializePostgreSQL(
         : { statement_timeout: statementTimeoutMs }),
     }),
     max,
+    reportError,
   );
   try {
     const client = await pool.connect();
@@ -718,6 +723,7 @@ export async function initConnections(
       state.pgProvider,
       cfg.pgPoolMax ?? 5,
       cfg.statementTimeoutMs,
+      state.reportError,
     );
     state.mainDb = adapter;
     state.mainPool = adapter.pool;
@@ -730,7 +736,11 @@ export async function initConnections(
       );
     }
     const pg = await loadPgModule(state.pgProvider);
-    state.syncPool = new pg.Pool({ connectionString: cfg.syncUrl, max: 1 });
+    state.syncPool = new AccountedPgPool(
+      new pg.Pool({ connectionString: cfg.syncUrl, max: 1 }),
+      1,
+      state.reportError,
+    );
   }
 }
 

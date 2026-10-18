@@ -293,12 +293,12 @@ export function createOminipgWorkload(
       ...resolved,
       onError(error) {
         try {
-          configuredOnError?.(error);
+          void Promise.resolve(configuredOnError?.(error)).catch(() => {});
         } catch {
           // Host observers cannot interrupt the workload session.
         }
         try {
-          resolvedOnError?.(error);
+          void Promise.resolve(resolvedOnError?.(error)).catch(() => {});
         } catch {
           // Host observers cannot interrupt the workload session.
         }

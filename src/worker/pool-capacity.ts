@@ -1,7 +1,7 @@
 import type { PgPool, PgPoolClient } from "../shared/types.ts";
 
 type PairSlot = {
-  client: PgPoolClient;
+  client: Pick<PgPoolClient, "query">;
   returnClient(destroy?: boolean): void;
   reset: boolean;
   discarded: boolean;
@@ -61,13 +61,54 @@ export class AccountedPgPool implements PgPool {
   private rawEndStarted = false;
   private change = changed();
 
-  constructor(private readonly pool: PgPool, private readonly max: number) {
+  constructor(
+    private readonly pool: PgPool,
+    private readonly max: number,
+    private readonly reportError: (error: Error) => void = () => {},
+  ) {
     if (!Number.isSafeInteger(max) || max < 1) {
       throw new TypeError(
         "PostgreSQL pool capacity must be a positive safe integer.",
       );
     }
     this.options = { ...pool.options, max };
+    pool.on?.("error", this.onPoolError);
+  }
+
+  private readonly onPoolError = (error: Error): void => {
+    try {
+      void Promise.resolve(this.reportError(error)).catch(() => {});
+    } catch {
+      // Diagnostic observers cannot interrupt provider cleanup or query errors.
+    }
+  };
+
+  private async checkout(): Promise<{
+    client: PgPoolClient;
+    query: PgPoolClient["query"];
+    release(destroy?: boolean): void;
+  }> {
+    const client = await this.pool.connect();
+    // Attach as EACH checkout settles, including the first half of a pair.
+    // The event is independent of the active SQL promise's rejection.
+    let fault: Error | undefined;
+    const onError = (error: Error) => {
+      fault ??= error;
+      this.onPoolError(error);
+    };
+    const rawRelease = client.release.bind(client);
+    client.on("error", onError);
+    return {
+      client,
+      query: (sql, params) =>
+        fault ? Promise.reject(fault) : client.query(sql, params),
+      release(destroy) {
+        // Failed returns retain the observer and the caller's capacity charge.
+        // A fault never constitutes an early return or a COMMIT/rollback fact.
+        rawRelease(destroy || fault !== undefined);
+        client.removeListener("error", onError);
+      },
+    };
   }
 
   private notify(): void {
@@ -85,18 +126,19 @@ export class AccountedPgPool implements PgPool {
     }
     if (this.closing) throw closed();
     this.normal++;
-    let client: PgPoolClient;
+    let borrowed: Awaited<ReturnType<AccountedPgPool["checkout"]>>;
     try {
-      client = await this.pool.connect();
+      borrowed = await this.checkout();
     } catch (error) {
       this.normal--;
       this.notify();
       throw error;
     }
+    const client = borrowed.client;
     let released = false;
     // node-postgres replaces client.release on checkout; retain this borrow's
     // release closure so an old wrapper cannot release a later reuse.
-    const rawRelease = client.release.bind(client);
+    const rawRelease = borrowed.release;
     const release = (destroy?: boolean) => {
       if (released) {
         // Preserve the provider's duplicate-release behavior without changing
@@ -125,6 +167,7 @@ export class AccountedPgPool implements PgPool {
     const wrapper: PgPoolClient = new Proxy(client, {
       get(target, key) {
         if (key === "release") return release;
+        if (key === "query") return borrowed.query;
         const value = Reflect.get(target, key, target);
         if (typeof value !== "function") return value;
         return (...args: unknown[]) => {
@@ -150,15 +193,15 @@ export class AccountedPgPool implements PgPool {
     };
     this.pair = state;
     // Capture synchronous provider failures without skipping the second result.
-    const connect = async () => await this.pool.connect();
+    const connect = () => this.checkout();
     const results = await Promise.allSettled([connect(), connect()]);
     let failure: unknown;
     let failed = false;
     for (const result of results) {
       if (result.status === "fulfilled") {
         state.slots.push({
-          client: result.value,
-          returnClient: result.value.release.bind(result.value),
+          client: { query: result.value.query },
+          returnClient: result.value.release,
           reset: false,
           discarded: false,
           released: false,
@@ -291,6 +334,8 @@ export class AccountedPgPool implements PgPool {
       // unknown failure. Only pre-shutdown resource cleanup may be retried.
       this.rawEndStarted = true;
       await this.pool.end();
+      // Keep observation installed after an unconfirmed/failed shutdown.
+      this.pool.removeListener?.("error", this.onPoolError);
     });
     const task = this.endTask;
     void task.catch(() => {

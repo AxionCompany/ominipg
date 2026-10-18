@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { assertEquals, assertRejects } from "@std/assert";
 import { AccountedPgPool } from "../src/worker/pool-capacity.ts";
 import { PgListenerHub } from "../src/client/notifications.ts";
@@ -229,12 +230,12 @@ Deno.test("partial pair failure waits for late acquisition and releases it", asy
     async connect() {
       if (++calls === 1) throw undefined;
       await late.promise;
-      return {
+      return Object.assign(new EventEmitter(), {
         query: () => Promise.resolve({ rows: [] }),
         release() {
           releases++;
         },
-      } as unknown as PgPoolClient;
+      }) as unknown as PgPoolClient;
     },
     end() {
       ended++;
@@ -273,12 +274,12 @@ Deno.test("abort during pair acquisition retains charge until both raw clients r
     options: { max: 2 },
     async connect() {
       await late.promise;
-      return {
+      return Object.assign(new EventEmitter(), {
         query: () => Promise.resolve({ rows: [] }),
         release() {
           releases++;
         },
-      } as unknown as PgPoolClient;
+      }) as unknown as PgPoolClient;
     },
     end() {
       return Promise.resolve();
@@ -323,12 +324,12 @@ Deno.test("end wakes acquisition admission waiters and rejects a late normal bor
     async connect() {
       calls++;
       await late.promise;
-      return {
+      return Object.assign(new EventEmitter(), {
         query: () => Promise.resolve({ rows: [] }),
         release() {
           releases++;
         },
-      } as unknown as PgPoolClient;
+      }) as unknown as PgPoolClient;
     },
     end() {
       ended++;
@@ -357,12 +358,12 @@ Deno.test("late normal checkout after close is returned instead of exposed", asy
     options: { max: 2 },
     async connect() {
       await late.promise;
-      return {
+      return Object.assign(new EventEmitter(), {
         release(destroy: boolean) {
           assertEquals(destroy, true);
           releases++;
         },
-      } as unknown as PgPoolClient;
+      }) as unknown as PgPoolClient;
     },
     end() {
       ended++;
@@ -403,11 +404,11 @@ Deno.test("late failed return remains owned and end retries it before pool closu
     options: { max: 2 },
     async connect() {
       await late.promise;
-      return {
+      return Object.assign(new EventEmitter(), {
         release() {
           if (++attempts === 1) throw new Error("late return failed");
         },
-      } as unknown as PgPoolClient;
+      }) as unknown as PgPoolClient;
     },
     end() {
       ended++;
@@ -426,10 +427,10 @@ Deno.test("late failed return remains owned and end retries it before pool closu
 });
 Deno.test("old normal wrapper cannot release a newly checked-out reuse of the same client", async () => {
   let active = false;
-  const client = {
+  const client = Object.assign(new EventEmitter(), {
     release() {},
     query: () => Promise.resolve({ rows: [] }),
-  } as unknown as PgPoolClient;
+  }) as unknown as PgPoolClient;
   const raw: PgPool = {
     options: { max: 2 },
     connect() {
@@ -450,8 +451,11 @@ Deno.test("old normal wrapper cannot release a newly checked-out reuse of the sa
   };
   const pool = new AccountedPgPool(raw, 2);
   const first = await pool.connect();
+  assertEquals((client as unknown as EventEmitter).listenerCount("error"), 1);
   first.release();
+  assertEquals((client as unknown as EventEmitter).listenerCount("error"), 0);
   const second = await pool.connect();
+  assertEquals((client as unknown as EventEmitter).listenerCount("error"), 1);
   let failed = false;
   try {
     first.release();
@@ -474,7 +478,7 @@ for (const failure of ["connect", "probe", "release"] as const) {
         if (failure === "connect") {
           return Promise.reject(new Error("connect fault"));
         }
-        return Promise.resolve({
+        return Promise.resolve(Object.assign(new EventEmitter(), {
           query() {
             return failure === "probe"
               ? Promise.reject(new Error("probe fault"))
@@ -486,7 +490,7 @@ for (const failure of ["connect", "probe", "release"] as const) {
               throw new Error("release fault");
             }
           },
-        } as unknown as PgPoolClient);
+        }) as unknown as PgPoolClient);
       }
       end() {
         ended++;
@@ -653,4 +657,210 @@ Deno.test("pool end seals pair query admission synchronously before deferred cle
   await admitted;
   await close;
   assertEquals(f.ended(), 1);
+});
+
+function errorFixture(report: (error: Error) => void = () => {}) {
+  const clients: Array<PgPoolClient & EventEmitter> = [];
+  const destroys: boolean[] = [];
+  const second = gate();
+  let holdSecond = false, failReturn = false, failEnd = false, active = 0;
+  const raw = Object.assign(new EventEmitter(), {
+    options: { max: 2 },
+    async connect() {
+      const number = clients.length;
+      let returned = false;
+      const client = Object.assign(new EventEmitter(), {
+        query: (_sql: string) => Promise.resolve({ rows: [] }),
+        release(destroy = false) {
+          if (failReturn) {
+            failReturn = false;
+            throw new Error("return failed");
+          }
+          if (returned) throw new Error("double return");
+          returned = true;
+          active--;
+          destroys.push(destroy);
+        },
+      });
+      clients.push(client);
+      active++;
+      if (holdSecond && number === 1) await second.promise;
+      return client;
+    },
+    end() {
+      if (failEnd) return Promise.reject(new Error("shutdown failed"));
+      assertEquals(active, 0);
+      return Promise.resolve();
+    },
+  });
+  return {
+    raw,
+    clients,
+    destroys,
+    pool: new AccountedPgPool(raw, 2, report),
+    active: () => active,
+    holdSecond() {
+      holdSecond = true;
+    },
+    releaseSecond: second.resolve,
+    failReturn() {
+      failReturn = true;
+    },
+    failEnd() {
+      failEnd = true;
+    },
+  };
+}
+
+Deno.test("pool owns borrowed and idle error events without returning capacity early", async () => {
+  const errors: Error[] = [];
+  const f = errorFixture((error) => {
+    errors.push(error);
+  });
+  const client = await f.pool.connect();
+  const fault = new Error("connection fault");
+  f.clients[0].emit("error", fault);
+  assertEquals(errors, [fault]);
+  assertEquals(f.active(), 1);
+  await assertRejects(() => client.query("COMMIT"), Error, "connection fault");
+  assertEquals(f.active(), 1);
+  client.release();
+  assertEquals(f.destroys, [true]);
+  assertEquals(f.clients[0].listenerCount("error"), 0);
+  const idle = new Error("idle fault");
+  f.raw.emit("error", idle);
+  assertEquals(errors, [fault, idle]);
+  const healthy = await f.pool.connect();
+  await healthy.query("SELECT healthy");
+  healthy.release();
+  await f.pool.end();
+  assertEquals(f.raw.listenerCount("error"), 0);
+});
+
+Deno.test("pool owns first pair client while the second checkout remains pending", async () => {
+  const errors: Error[] = [];
+  const f = errorFixture((error) => {
+    errors.push(error);
+  });
+  f.holdSecond();
+  const pending = f.pool.reservePair();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(f.clients.length, 2);
+  assertEquals(f.clients[0].listenerCount("error"), 1);
+  const fault = new Error("first pair fault");
+  f.clients[0].emit("error", fault);
+  assertEquals(errors, [fault]);
+  assertEquals(f.active(), 2);
+  f.releaseSecond();
+  const pair = await pending;
+  await assertRejects(
+    () => pair.clients[0].query("SELECT snapshot"),
+    Error,
+    "first pair fault",
+  );
+  await pair.release();
+  assertEquals(f.destroys, [true, false]);
+  await f.pool.end();
+});
+
+Deno.test("pool retains fault observation and charge after a failed client return", async () => {
+  const errors: Error[] = [];
+  const f = errorFixture((error) => {
+    errors.push(error);
+  });
+  const client = await f.pool.connect();
+  f.failReturn();
+  let failure: unknown;
+  try {
+    client.release();
+  } catch (error) {
+    failure = error;
+  }
+  assertEquals((failure as Error).message, "return failed");
+  assertEquals(f.active(), 1);
+  assertEquals(f.clients[0].listenerCount("error"), 1);
+  const fault = new Error("late fault");
+  f.clients[0].emit("error", fault);
+  await f.pool.end();
+  assertEquals(errors, [fault]);
+  assertEquals(f.destroys, [true]);
+  assertEquals(f.clients[0].listenerCount("error"), 0);
+});
+
+Deno.test("pool fault observers cannot interrupt query refusal or cleanup", async () => {
+  for (
+    const report of [() => {
+      throw new Error("observer threw");
+    }, () => Promise.reject(new Error("observer rejected"))]
+  ) {
+    const f = errorFixture(report);
+    const client = await f.pool.connect();
+    f.clients[0].emit("error", new Error("transport fault"));
+    await assertRejects(
+      () => client.query("ROLLBACK"),
+      Error,
+      "transport fault",
+    );
+    client.release();
+    await f.pool.end();
+    assertEquals(f.destroys, [true]);
+  }
+});
+
+Deno.test("pool keeps idle fault observation after unconfirmed shutdown", async () => {
+  const errors: Error[] = [];
+  const f = errorFixture((error) => {
+    errors.push(error);
+  });
+  f.failEnd();
+  await assertRejects(() => f.pool.end(), Error, "shutdown failed");
+  const fault = new Error("late shutdown fault");
+  f.raw.emit("error", fault);
+  assertEquals(errors, [fault]);
+  assertEquals(f.raw.listenerCount("error"), 1);
+});
+
+Deno.test("initial sync returns its remote client when local role reset fails", async () => {
+  const { createEngineState } = await import("../src/worker/db.ts");
+  const { performInitialSync } = await import("../src/worker/sync/initial.ts");
+  const f = errorFixture();
+  const state = createEngineState();
+  state.syncPool = f.pool;
+  state.mainDb = {
+    query: () => Promise.resolve({ rows: [] }),
+    exec: (sql) =>
+      sql.includes("'origin'")
+        ? Promise.reject(new Error("local reset failed"))
+        : Promise.resolve(),
+    close: () => Promise.resolve(),
+  };
+  await assertRejects(
+    () => performInitialSync(state),
+    Error,
+    "local reset failed",
+  );
+  assertEquals(f.active(), 0);
+  assertEquals(f.destroys, [false]);
+  await f.pool.end();
+});
+
+Deno.test("pair reset faults discard clients and failed returns retain their observers", async () => {
+  const errors: Error[] = [];
+  const f = errorFixture((error) => {
+    errors.push(error);
+  });
+  const pair = await f.pool.reservePair();
+  const fault = new Error("reset transport fault");
+  f.clients[0].query = () => {
+    f.clients[0].emit("error", fault);
+    return Promise.resolve({ rows: [] });
+  };
+  f.failReturn();
+  await assertRejects(() => pair.release(), Error, "return failed");
+  assertEquals(f.active(), 1);
+  assertEquals(f.clients[0].listenerCount("error"), 1);
+  await f.pool.end();
+  assertEquals(f.destroys, [false, true]);
+  assertEquals(errors, [fault]);
+  assertEquals(f.clients[0].listenerCount("error"), 0);
 });
