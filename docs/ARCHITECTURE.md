@@ -382,9 +382,41 @@ rejecting queued legacy UPDATE/COMMIT work merely because a close frame arrived.
 Host cancellation uses the engine's direct abort/close path. Unknown cleanup is
 never interpreted as free capacity or permission to replay an operation.
 
-These are backend resources and frames. The callback-level client capability,
-managed-generation forwarding and owner historical-read authorization/expiry are
-not activated by this protocol addition.
+These backend resources and frames support the callback capability below.
+Managed-generation forwarding and owner historical-read authorization/expiry
+remain separate integration gates.
+
+### Callback snapshot capability
+
+Ominipg.withReadSnapshot(callback, { signal }) admits one scope per database
+instance. The workload must advertise snapshotProtocol: 1; older workloads
+refuse this capability rather than silently substituting ordinary reads. The
+returned scope has kind: "exclusive" or kind: "pooled" and a snapshot
+query/queryRaw executor. Pooled scopes also provide current(callback), which
+serializes transactions on the already-reserved control connection.
+
+The callback's return value is local computation. Query handles seal at scope
+end, and actual request/transaction cleanup finishes before the method settles.
+Signal cancellation and database close abort the scope, including a held local
+callback, without treating that local computation as forcibly terminated.
+Detached callback code can still run, but retained executors refuse further
+work. A late abort before cleanup completes suppresses the callback result.
+
+Current-state transactions reuse the same scoped transaction lifecycle as normal
+database transactions, including executor sealing, raw request drain and
+uncertain rollback fail-close. No separate transaction evaluator is added.
+Concurrent current calls serialize; do not nest current inside its own callback.
+Nested/concurrent snapshot scopes on one instance refuse immediately.
+
+Only trusted compiled read SQL belongs on the snapshot executor. Do not send
+transaction-control or session-changing SQL through it. Use the supplied
+executors inside callbacks: awaiting ordinary PGlite database operations there
+would wait behind the scope itself. Cancellation is not proof that previously
+admitted SQL or COMMIT did not execute, and does not authorize callback replay.
+
+The capability is also forwarded by the Drizzle mixin. It is a backend API;
+Copilotz generation fencing and public owner Collection snapshot authorization
+remain separate work.
 
 ### Sync
 

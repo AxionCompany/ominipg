@@ -150,6 +150,19 @@ export type OminipgTransaction = Readonly<{
   ): Promise<{ rows: TRow[] }>;
 }>;
 
+/** Backend snapshot scope for trusted SQL. Snapshot executors accept compiled
+ * reads only; never send transaction-control or session-changing SQL through
+ * them. Current-state transactions belong to the reserved control connection. */
+export type OminipgReadSnapshot =
+  | Readonly<{ kind: "exclusive"; snapshot: OminipgTransaction }>
+  | Readonly<{
+    kind: "pooled";
+    snapshot: OminipgTransaction;
+    current<T>(
+      operation: (transaction: OminipgTransaction) => T | Promise<T>,
+    ): Promise<T>;
+  }>;
+
 /**
  * Main Ominipg database client class.
  *
@@ -189,6 +202,8 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   private operationTail: Promise<void> = Promise.resolve();
   /** Set when the workload runs queries concurrently (PostgreSQL pools). */
   private concurrent = false;
+  private snapshotProtocol = false;
+  private snapshotController?: AbortController;
   private readonly concurrentOperations = new Set<Promise<void>>();
   private closePromise?: Promise<void>;
   private sessionClosePromise?: Promise<void>;
@@ -358,9 +373,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
     try {
       const initialized = await session.request<
-        { concurrent?: boolean } | undefined
+        { concurrent?: boolean; snapshotProtocol?: number } | undefined
       >("initialize", initConfig, 60_000);
       db.concurrent = initialized?.concurrent === true;
+      db.snapshotProtocol = initialized?.snapshotProtocol === 1;
     } catch (error) {
       await session.close().catch(() => {});
       throw error;
@@ -450,6 +466,47 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     return await (this.concurrent
       ? this.runConcurrent(run)
       : this.runExclusive(run));
+  }
+
+  /** Holds a bounded backend read snapshot for trusted compiled SQL.
+   * Use only the supplied executors inside the callback; ordinary PGlite
+   * operations wait behind this scope. Nested/concurrent scopes refuse.
+   * Cancellation and database close seal handles and await raw cleanup. */
+  public async withReadSnapshot<T>(
+    callback: (scope: OminipgReadSnapshot) => T | Promise<T>,
+    options: Readonly<{ signal?: AbortSignal }> = {},
+  ): Promise<T> {
+    this.assertOpen();
+    if (!this.snapshotProtocol) {
+      throw new Error("Snapshot protocol is unavailable.");
+    }
+    if (this.snapshotController) {
+      throw new Error("A read snapshot is already active.");
+    }
+    const signal = options.signal;
+    signal?.throwIfAborted();
+    const controller = new AbortController();
+    // Accessors or custom signal methods can reenter before the claim. Never
+    // overwrite a scope started by that code or admit after it closed the DB.
+    this.assertOpen();
+    if (this.snapshotController) {
+      throw new Error("A read snapshot is already active.");
+    }
+    this.snapshotController = controller;
+    const cancel = () => controller.abort(signal?.reason);
+    try {
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (signal?.aborted) cancel();
+      const run = () => this.snapshotScope(callback, controller.signal);
+      return await (this.concurrent
+        ? this.runConcurrent(run)
+        : this.runExclusive(run));
+    } finally {
+      if (this.snapshotController === controller) {
+        this.snapshotController = undefined;
+      }
+      signal?.removeEventListener("abort", cancel);
+    }
   }
 
   /**
@@ -613,6 +670,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   public async close(): Promise<void> {
     if (this.closePromise) return await this.closePromise;
     this.closing = true;
+    this.snapshotController?.abort(new Error("Ominipg instance is closed."));
     this.closePromise = this.runExclusive(() => this.closeSession());
     return await this.closePromise;
   }
@@ -637,9 +695,20 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     })();
   }
 
-  private async laneTransaction<T>(
+  private laneTransaction<T>(
     callback: (transaction: OminipgTransaction) => T | Promise<T>,
     lane?: string,
+  ): Promise<T> {
+    return this.scopedTransaction(
+      callback,
+      (sql, params) => this.queryInLane(sql, params, lane),
+    );
+  }
+
+  private async scopedTransaction<T>(
+    callback: (transaction: OminipgTransaction) => T | Promise<T>,
+    send: OminipgTransaction["query"],
+    signal?: AbortSignal,
   ): Promise<T> {
     let active = true;
     const pending = new Set<Promise<unknown>>();
@@ -647,10 +716,13 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       sql: string,
       params?: unknown[],
     ): Promise<{ rows: TRow[] }> => {
-      if (!active || this.poisoned || this.closed) {
+      if (!active || signal?.aborted || this.poisoned || this.closed) {
         return Promise.reject(new Error("Ominipg transaction is closed."));
       }
-      const result = this.queryInLane<TRow>(sql, params, lane);
+      const result = send<TRow>(sql, params).then((value) => {
+        signal?.throwIfAborted();
+        return value;
+      });
       pending.add(result);
       void result.then(
         () => pending.delete(result),
@@ -662,21 +734,25 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     try {
       // BEGIN belongs inside cleanup: a timeout may hide a successful remote
       // open. The session gate drains that request before admitting ROLLBACK.
-      await this.queryInLane("BEGIN", undefined, lane);
+      signal?.throwIfAborted();
+      await send("BEGIN");
       let result: T;
       try {
+        signal?.throwIfAborted();
         result = await callback(transaction);
       } finally {
         active = false;
       }
       await Promise.all([...pending]);
-      await this.queryInLane("COMMIT", undefined, lane);
+      signal?.throwIfAborted();
+      await send("COMMIT");
+      signal?.throwIfAborted();
       return result;
     } catch (error) {
       active = false;
       await Promise.allSettled([...pending]);
       try {
-        await this.queryInLane("ROLLBACK", undefined, lane);
+        await send("ROLLBACK");
       } catch {
         // An unproved rollback must not return a possibly live transaction to
         // service. Retire the session without waiting on our own operation.
@@ -688,6 +764,153 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     } finally {
       active = false;
     }
+  }
+
+  private async snapshotScope<T>(
+    callback: (scope: OminipgReadSnapshot) => T | Promise<T>,
+    signal: AbortSignal,
+  ): Promise<T> {
+    signal.throwIfAborted();
+    const snapshotId = crypto.randomUUID();
+    let active = true;
+    const pending = new Set<Promise<unknown>>();
+    let currentTail: Promise<void> = Promise.resolve();
+    let closeTask: Promise<void> | undefined;
+    let rejectAbort!: (reason: unknown) => void;
+    const aborted = new Promise<never>((_, reject) => {
+      rejectAbort = reject;
+    });
+    void aborted.catch(() => {});
+    const track = <V>(promise: Promise<V>): Promise<V> => {
+      pending.add(promise);
+      void promise.then(
+        () => pending.delete(promise),
+        () => pending.delete(promise),
+      );
+      return promise;
+    };
+    const closeResource = () => {
+      active = false;
+      return closeTask ??= Promise.resolve().then(async () => {
+        await Promise.allSettled([...pending]);
+        await currentTail;
+        await this.session.request("snapshot-close", { snapshotId });
+      });
+    };
+    const abort = () => {
+      active = false;
+      rejectAbort(signal.reason);
+      void closeResource().catch(() => {});
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    const query = <
+      TRow extends Record<string, unknown> = Record<string, unknown>,
+    >(
+      sql: string,
+      params?: unknown[],
+    ): Promise<{ rows: TRow[] }> => {
+      if (!active || signal.aborted || this.poisoned || this.closed) {
+        return Promise.reject(new Error("Read snapshot is closed."));
+      }
+      return track(
+        this.session.request<{ rows: TRow[] }>("snapshot-query", {
+          snapshotId,
+          sql,
+          params,
+        })
+          .then((value) => {
+            signal.throwIfAborted();
+            return value;
+          }),
+      );
+    };
+    const snapshot = Object.freeze({ query, queryRaw: query });
+    let failed = false;
+    let failure: unknown;
+    let result!: T;
+    try {
+      const opened = await this.session.request<
+        { kind: "exclusive" | "pooled" }
+      >(
+        "snapshot-open",
+        { snapshotId },
+      );
+      signal.throwIfAborted();
+      const scope: OminipgReadSnapshot = opened.kind === "exclusive"
+        ? { kind: "exclusive", snapshot }
+        : opened.kind === "pooled"
+        ? {
+          kind: "pooled",
+          snapshot,
+          current: <V>(
+            operation: (tx: OminipgTransaction) => V | Promise<V>,
+          ) => {
+            if (!active || signal.aborted) {
+              return Promise.reject(new Error("Read snapshot is closed."));
+            }
+            const task = currentTail.then(async () => {
+              signal.throwIfAborted();
+              return await this.scopedTransaction<V>(
+                (tx) =>
+                  Promise.race([
+                    Promise.resolve().then(() => operation(tx)),
+                    aborted,
+                  ]),
+                (sql, params) =>
+                  this.session.request("snapshot-query", {
+                    snapshotId,
+                    current: true,
+                    sql,
+                    params,
+                  }),
+                signal,
+              );
+            });
+            currentTail = task.then(() => {}, () => {});
+            return track(task);
+          },
+        }
+        : (() => {
+          throw new Error("Unsupported snapshot scope.");
+        })();
+      result = await Promise.race([
+        Promise.resolve().then(() => {
+          signal.throwIfAborted();
+          return callback(Object.freeze(scope));
+        }),
+        aborted,
+      ]);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    active = false;
+    try {
+      await closeResource();
+    } catch (cleanupError) {
+      failure = failed
+        ? new AggregateError(
+          [failure, cleanupError],
+          "Snapshot callback and cleanup failed.",
+        )
+        : cleanupError;
+      failed = true;
+      this.poisoned = true;
+      try {
+        await this.closeSession();
+      } catch (closeError) {
+        failure = new AggregateError(
+          [failure, closeError],
+          "Snapshot cleanup and session close failed.",
+        );
+      }
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+    if (failed) throw failure;
+    signal.throwIfAborted();
+    return result;
   }
 
   private async queryInLane<
@@ -784,6 +1007,8 @@ export type OminipgDrizzleMixin = {
   transaction: <T>(
     callback: (transaction: OminipgTransaction) => T | Promise<T>,
   ) => Promise<T>;
+  /** Trusted backend read snapshot and optional current-state control lane. */
+  withReadSnapshot: Ominipg["withReadSnapshot"];
   /** Access to the underlying Ominipg instance */
   _ominipg: Ominipg;
 };
@@ -965,6 +1190,7 @@ function createDrizzleAdapter<
     // Raw query access
     queryRaw: ominipgInstance.query.bind(ominipgInstance),
     transaction: ominipgInstance.transaction.bind(ominipgInstance),
+    withReadSnapshot: ominipgInstance.withReadSnapshot.bind(ominipgInstance),
 
     // Access to the underlying Ominipg instance
     _ominipg: ominipgInstance,

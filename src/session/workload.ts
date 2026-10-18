@@ -124,7 +124,7 @@ async function executeRequest(
       await engine.initialize(config);
       // Clients send concurrent queries, with transactions on their own
       // lanes, only after this workload reports that it can execute them.
-      return { concurrent: engine.concurrent };
+      return { concurrent: engine.concurrent, snapshotProtocol: 1 };
     }
     case "query": {
       const payload = recordPayload(request);
