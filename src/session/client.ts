@@ -36,7 +36,19 @@ type PendingRequest = {
   reject(reason: unknown): void;
   timer: ReturnType<typeof setTimeout>;
   timedOut: boolean;
+  transaction?: string;
+  subscription?: string;
 };
+
+type DrainScope =
+  | Readonly<{ kind: "transaction"; id: string | undefined }>
+  | Readonly<{ kind: "subscription"; id: string }>;
+
+function matchesScope(request: PendingRequest, scope: DrainScope): boolean {
+  return scope.kind === "subscription"
+    ? request.subscription === scope.id
+    : request.transaction === scope.id;
+}
 
 type SessionClientOptions = Readonly<{
   handle: WorkHandle;
@@ -57,6 +69,43 @@ function assertRequestTimeout(timeoutMs: number): void {
 
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+/** Empty/unlaned controls share the default pool lane; only real named lanes
+ * are isolated. Non-query operations are also part of the default lane. */
+function requestTransaction(
+  operation: OminipgSessionOperation,
+  payload: unknown,
+): string | undefined {
+  if (operation !== "query" || !payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const value = (payload as { transaction?: unknown }).transaction;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function requestSubscription(
+  operation: OminipgSessionOperation,
+  payload: unknown,
+): string | undefined {
+  if (
+    (operation !== "listen" && operation !== "unlisten") || !payload ||
+    typeof payload !== "object"
+  ) return undefined;
+  const value = (payload as { subscriptionId?: unknown }).subscriptionId;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/** Capture scalar routing fields once without normalizing unsupported classes.
+ * Nested query values retain the existing codec behavior. */
+function captureEnvelope(payload: unknown): unknown {
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const prototype = Object.getPrototypeOf(payload);
+    if (prototype === Object.prototype || prototype === null) {
+      return { ...payload };
+    }
+  }
+  return payload;
 }
 
 class RemoteSubscription implements PgSubscription {
@@ -147,6 +196,8 @@ export class OminipgSessionClient {
   private writeTail: Promise<void> = Promise.resolve();
   /** Holds new requests while a timed-out request drains. */
   private requestGate: Promise<void> = Promise.resolve();
+  /** Trusted initialize result; never inferred from caller URL or lane data. */
+  private concurrent = false;
   private closing = false;
   private closed = false;
 
@@ -176,11 +227,42 @@ export class OminipgSessionClient {
     if (this.closed || this.closing && operation !== "close") {
       throw new Error("Ominipg session is closed.");
     }
+    payload = captureEnvelope(payload);
     // Requests are sent without waiting for earlier responses; the workload
     // decides what may run concurrently.
-    return await this.requestGate.then(() =>
-      this.sendRequest<T>(operation, payload, timeoutMs)
-    );
+    if (this.concurrent && operation !== "close") {
+      const subscription = operation === "unlisten"
+        ? requestSubscription(operation, payload)
+        : undefined;
+      const scope: DrainScope = subscription === undefined
+        ? { kind: "transaction", id: requestTransaction(operation, payload) }
+        : { kind: "subscription", id: subscription };
+      // Named progress and subscription cleanup must not wait on an unrelated
+      // pool checkout. Unsubscribe completes without releasing the shared pin.
+      // UNLISTEN waits for its own accepted subscription work (including a
+      // pending LISTEN); new LISTEN and other unlaned work keep the default gate.
+      while (
+        [...this.pending.values()].some((request) =>
+          matchesScope(request, scope) &&
+          (scope.kind === "subscription" || request.timedOut)
+        )
+      ) {
+        await this.waitForIdle(scope);
+      }
+    } else {
+      await this.requestGate;
+    }
+    if (this.closed || this.closing && operation !== "close") {
+      throw new Error("Ominipg session is closed.");
+    }
+    const value = await this.sendRequest<T>(operation, payload, timeoutMs);
+    if (operation === "initialize") {
+      this.concurrent = Boolean(
+        value && typeof value === "object" &&
+          (value as { concurrent?: unknown }).concurrent === true,
+      );
+    }
+    return value;
   }
 
   private async sendRequest<T>(
@@ -189,16 +271,22 @@ export class OminipgSessionClient {
     timeoutMs: number,
   ): Promise<T> {
     const id = ++this.requestId;
+    // Encoding failure never creates an accepted raw request or orphan timer.
+    const encoded = encodeSessionFrame(sessionRequest(id, operation, payload));
     const response = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         const pending = this.pending.get(id);
         if (!pending || pending.timedOut) return;
         pending.timedOut = true;
-        this.requestGate = this.requestGate.then(() => this.whenIdle());
+        if (!this.concurrent) {
+          this.requestGate = this.requestGate.then(() => this.whenIdle());
+        }
         pending.reject(
           new Error(
             `Ominipg '${operation}' request timed out after ${timeoutMs}ms; ` +
-              "the session will drain it before accepting more work.",
+              (this.concurrent
+                ? "its lane will drain it before accepting more work."
+                : "the session will drain it before accepting more work."),
           ),
         );
       }, timeoutMs);
@@ -207,9 +295,10 @@ export class OminipgSessionClient {
         reject,
         timer,
         timedOut: false,
+        transaction: requestTransaction(operation, payload),
+        subscription: requestSubscription(operation, payload),
       });
     });
-    const encoded = encodeSessionFrame(sessionRequest(id, operation, payload));
     const write = this.writeTail.then(() =>
       writeEncodedSessionFrame(this.input, encoded)
     );
@@ -225,10 +314,27 @@ export class OminipgSessionClient {
     return await response;
   }
 
-  /** Resolves after every accepted request has produced a terminal response. */
+  /** Resolves only after every accepted raw response drains. */
   whenIdle(): Promise<void> {
-    if (this.pending.size === 0) return Promise.resolve();
-    return new Promise((resolve) => this.idleWaiters.add(resolve));
+    return this.waitForIdle();
+  }
+
+  private waitForIdle(scope?: DrainScope): Promise<void> {
+    const busy = () =>
+      scope === undefined
+        ? this.pending.size > 0
+        : [...this.pending.values()].some((request) =>
+          matchesScope(request, scope)
+        );
+    if (!busy()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const check = () => {
+        if (busy()) return;
+        this.idleWaiters.delete(check);
+        resolve();
+      };
+      this.idleWaiters.add(check);
+    });
   }
 
   async listen(
@@ -370,9 +476,7 @@ export class OminipgSessionClient {
   }
 
   private resolveIdle(): void {
-    if (this.pending.size > 0) return;
-    for (const resolve of this.idleWaiters) resolve();
-    this.idleWaiters.clear();
+    for (const check of this.idleWaiters) check();
   }
 
   private async finish(): Promise<void> {

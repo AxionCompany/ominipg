@@ -66,8 +66,9 @@ and call the same `Ominipg.query()` method as raw callers.
 - a monotonically increasing request ID correlates responses;
 - multiple request promises share one input/output byte stream;
 - notification and subscription-state frames are delivered as events;
-- request timeouts reject the caller, while the session drains the accepted
-  operation before admitting the next one;
+- request timeouts reject the caller while accepted raw work continues to drain;
+  PGlite gates the whole session, while pooled PostgreSQL gates only the
+  affected named transaction or default/unlaned request group;
 - closing rejects pending requests and closes subscriptions;
 - injected dispatchers remain owned by the embedding application.
 
@@ -259,6 +260,22 @@ rollback is sent on the same lane. If rollback fails or cannot be confirmed, the
 client refuses further use and closes its workload session. Cleanup bypasses the
 public close queue so it cannot wait on its own active transaction. The original
 transaction error remains primary; `close()` retains any cleanup failure.
+
+PostgreSQL timeout gating uses the existing pending-request and idle-waiter
+state, scoped by the existing transaction lane. A timed-out pool checkout must
+not block the named transaction that can release its connection. This includes
+ordinary statements before callback completion, not just COMMIT/ROLLBACK. Calls
+in the affected lane still wait for their raw responses before starting a new
+request deadline. New LISTEN, other non-query and unlaned operations share the
+default group. UNLISTEN can remove a subscription using its already-pinned
+listener independently, after all accepted work for that subscription drains;
+this also preserves a pending LISTEN's order. Unsubscribe does not release the
+hub's shared connection; it remains charged until actual hub close/disconnect.
+The plain routing envelope is captured before awaiting admission, and encoding
+failures install no pending timer or raw waiter. PGlite retains whole-session
+serialization. Only the trusted initialized engine concurrency response enables
+this distinction. No extra pool, connection budget, fail-fast checkout policy,
+lane registry or public API is added.
 
 A timed-out `COMMIT` is still an unknown outcome. Attempting cleanup does not
 prove that business writes rolled back, and callers must not blindly replay
