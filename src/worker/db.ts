@@ -1,4 +1,5 @@
 import { detectDatabaseType } from "./utils.ts";
+import { transactionControl } from "./transaction-control.ts";
 import { applyDefaultLowMemoryPGliteConfig } from "../shared/pglite_config.ts";
 import type {
   LogicalReplicationServiceLike,
@@ -525,9 +526,9 @@ class PostgresAdapter implements DatabaseClient {
   constructor(readonly pool: PgPool) {}
 
   async query(sql: string, params?: unknown[], transaction?: string) {
-    const command = sql.trimStart().match(/^([A-Za-z]+)/)?.[1]?.toUpperCase();
+    const control = transactionControl(sql);
     const lane = transaction ?? DEFAULT_TRANSACTION;
-    if (command === "BEGIN" || command === "START") {
+    if (control.kind === "begin") {
       if (this.transactions.has(lane)) {
         throw new Error("A PostgreSQL transaction is already active.");
       }
@@ -543,16 +544,15 @@ class PostgresAdapter implements DatabaseClient {
     }
     const pinned = this.transactions.get(lane);
     if (pinned) {
-      const ends = command === "COMMIT" || command === "ROLLBACK";
       try {
         const result = await pinned.query(sql, params ?? []);
-        if (ends) {
+        if (control.kind === "end" && !control.chain) {
           this.transactions.delete(lane);
           pinned.release();
         }
         return { rows: result.rows };
       } catch (error) {
-        if (ends) {
+        if (control.kind === "end") {
           this.transactions.delete(lane);
           pinned.release(true);
         }
@@ -579,12 +579,14 @@ class PostgresAdapter implements DatabaseClient {
     const pinned = [...this.transactions.values()];
     this.transactions.clear();
     for (const client of pinned) {
+      let destroy = false;
       try {
         await client.query("ROLLBACK");
       } catch {
         // The connection may already be unavailable during shutdown.
+        destroy = true;
       }
-      client.release();
+      client.release(destroy);
     }
     await this.pool.end();
   }

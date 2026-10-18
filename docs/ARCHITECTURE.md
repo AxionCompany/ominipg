@@ -228,6 +228,23 @@ checks out a pool client on `BEGIN` and retains it for every session query until
 the transaction ends. Closing an engine with an active transaction attempts a
 rollback before releasing the connection.
 
+Savepoint rollback (`ROLLBACK [WORK|TRANSACTION] TO [SAVEPOINT] name`) retains
+the pinned PostgreSQL client, including when that statement fails. Full
+`COMMIT`/`ROLLBACK` and their `END`/`ABORT` aliases release it; `AND CHAIN`
+retains it for the next transaction. A failed full ending discards the client
+rather than returning a possibly open transaction to the pool. `COMMIT PREPARED`
+and `ROLLBACK PREPARED` are distinct from endings of the current lane.
+`PREPARE TRANSACTION`, which ends the current transaction, remains outside the
+supported managed-lane contract.
+
+Managed transaction control must be a single leading statement in its query. The
+adapter recognizes comments and quoted names and refuses control-led
+multi-statement batches before sending them. Ordinary schema/function SQL is not
+parsed or restricted by this classifier. Transaction control embedded later in
+an ordinary raw SQL batch is outside the supported managed-lane contract and
+remains unclassified. Broader raw batching would require provider-level
+transaction-state observation; this classifier does not provide that guarantee.
+
 A transaction is session-scoped, not an application-wide lock. The client owns
 an exclusive operation lane for the entire callback, so unrelated concurrent
 calls on the same instance wait until commit or rollback.
