@@ -23,9 +23,6 @@ export type OminipgSessionInitConfig =
 export type OminipgSessionOperation =
   | "initialize"
   | "query"
-  | "snapshot-open"
-  | "snapshot-query"
-  | "snapshot-close"
   | "sync"
   | "sync-sequences"
   | "dump-data-dir"
@@ -121,9 +118,6 @@ export function assertSessionRequest(value: unknown): OminipgSessionRequest {
   const operations: readonly string[] = [
     "initialize",
     "query",
-    "snapshot-open",
-    "snapshot-query",
-    "snapshot-close",
     "sync",
     "sync-sequences",
     "dump-data-dir",

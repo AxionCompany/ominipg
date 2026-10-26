@@ -285,7 +285,7 @@ for (const concurrent of [false, true]) {
 }
 
 // Real engines establish that lifetime guards also protect the readonly
-// transaction seam used by Copilotz snapshots, not only injected providers.
+// transaction API, not only injected providers.
 for (const backend of ["pglite", "postgres"] as const) {
   const url = backend === "postgres" ? Deno.env.get("DB_URL_PG") : ":memory:";
   Deno.test({

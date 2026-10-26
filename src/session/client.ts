@@ -38,24 +38,16 @@ type PendingRequest = {
   timedOut: boolean;
   transaction?: string;
   subscription?: string;
-  snapshotId?: string;
-  snapshotCurrent?: boolean;
 };
 
 type DrainScope =
   | Readonly<{ kind: "transaction"; id: string | undefined }>
-  | Readonly<{ kind: "subscription"; id: string }>
-  | Readonly<{ kind: "snapshot"; id: string; current?: boolean }>;
+  | Readonly<{ kind: "subscription"; id: string }>;
 
 function matchesScope(request: PendingRequest, scope: DrainScope): boolean {
-  if (scope.kind === "snapshot") {
-    return request.snapshotId === scope.id &&
-      (scope.current === undefined ||
-        request.snapshotCurrent === scope.current);
-  }
   return scope.kind === "subscription"
     ? request.subscription === scope.id
-    : request.snapshotId === undefined && request.transaction === scope.id;
+    : request.transaction === scope.id;
 }
 
 type SessionClientOptions = Readonly<{
@@ -90,24 +82,6 @@ function requestTransaction(
   }
   const value = (payload as { transaction?: unknown }).transaction;
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function requestSnapshot(
-  operation: OminipgSessionOperation,
-  payload: unknown,
-): { id: string; current: boolean } | undefined {
-  if (
-    (operation !== "snapshot-open" && operation !== "snapshot-query" &&
-      operation !== "snapshot-close") ||
-    !payload || typeof payload !== "object"
-  ) return undefined;
-  const value = payload as { snapshotId?: unknown; current?: unknown };
-  return typeof value.snapshotId === "string" && value.snapshotId.length > 0
-    ? {
-      id: value.snapshotId,
-      current: operation === "snapshot-query" && value.current === true,
-    }
-    : undefined;
 }
 
 function requestSubscription(
@@ -260,29 +234,18 @@ export class OminipgSessionClient {
       const subscription = operation === "unlisten"
         ? requestSubscription(operation, payload)
         : undefined;
-      const snapshot = requestSnapshot(operation, payload);
-      const scope: DrainScope = snapshot
-        ? {
-          kind: "snapshot",
-          id: snapshot.id,
-          ...(operation === "snapshot-close"
-            ? {}
-            : { current: snapshot.current }),
-        }
-        : subscription === undefined
+      const scope: DrainScope = subscription === undefined
         ? { kind: "transaction", id: requestTransaction(operation, payload) }
         : { kind: "subscription", id: subscription };
       // Named progress and subscription cleanup must not wait on an unrelated
       // pool checkout. Unsubscribe completes without releasing the shared pin.
       // UNLISTEN waits for its own accepted subscription work (including a
-      // pending LISTEN). Snapshot close drains both of its raw lanes; snapshot
-      // reads/current authority never inherit unrelated default checkout waits.
+      // pending LISTEN).
       // New LISTEN and other unlaned work keep the default gate.
       while (
         [...this.pending.values()].some((request) =>
           matchesScope(request, scope) &&
-          (scope.kind === "subscription" || operation === "snapshot-close" ||
-            request.timedOut)
+          (scope.kind === "subscription" || request.timedOut)
         )
       ) {
         await this.waitForIdle(scope);
@@ -311,7 +274,6 @@ export class OminipgSessionClient {
     const id = ++this.requestId;
     // Encoding failure never creates an accepted raw request or orphan timer.
     const encoded = encodeSessionFrame(sessionRequest(id, operation, payload));
-    const snapshot = requestSnapshot(operation, payload);
     const response = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         const pending = this.pending.get(id);
@@ -336,8 +298,6 @@ export class OminipgSessionClient {
         timedOut: false,
         transaction: requestTransaction(operation, payload),
         subscription: requestSubscription(operation, payload),
-        snapshotId: snapshot?.id,
-        snapshotCurrent: snapshot?.current,
       });
     });
     const write = this.writeTail.then(() =>

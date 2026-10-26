@@ -402,15 +402,27 @@ async transaction<T>(
 ): Promise<T>
 ```
 
-PostgreSQL execution pins one pool client for the transaction. Concurrent
-operations on the same `Ominipg` instance wait until the callback commits or
-rolls back. The transaction view exposes `query()` and `queryRaw()`. Use that
-view for transaction queries; awaiting parent-instance operations from inside
-the callback would wait for the callback itself to settle.
+PostgreSQL execution pins one pool client per transaction. Independent callbacks
+run concurrently up to available `pgPoolMax` capacity; additional callbacks
+queue. PGlite serializes callbacks and other operations on its single engine.
+The transaction view exposes `query()` and `queryRaw()`. Use that view for
+transaction queries. Awaiting parent-instance operations inside a PGlite
+callback would wait for the callback itself to settle; on PostgreSQL it can also
+wait indefinitely if all pool connections are held by callbacks.
 
 ```ts
 const result = await db.transaction(async (tx) => {
   await tx.query("INSERT INTO users(id, name) VALUES ($1, $2)", [id, name]);
+  return await tx.query("SELECT * FROM users WHERE id = $1", [id]);
+});
+```
+
+For a short read-only REPEATABLE READ transaction, set its characteristics
+before the first read. The callback API has already sent `BEGIN`:
+
+```ts
+const result = await db.transaction(async (tx) => {
+  await tx.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   return await tx.query("SELECT * FROM users WHERE id = $1", [id]);
 });
 ```

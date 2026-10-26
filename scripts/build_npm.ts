@@ -75,6 +75,7 @@ await build({
   },
   async postBuild() {
     await Deno.copyFile("README.md", `${outDir}/README.md`);
+    await Deno.copyFile("CHANGELOG.md", `${outDir}/CHANGELOG.md`);
     await Deno.copyFile("LICENSE", `${outDir}/LICENSE`);
     await Deno.mkdir(`${outDir}/assets`, { recursive: true });
     await Deno.copyFile(

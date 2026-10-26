@@ -16,9 +16,9 @@ public execution core runtime-neutral.
 | Database callbacks passed to an inline engine                    | Private capture or workload-owned dependencies |
 | Closing a worker/direct client followed separate paths           | One session close lifecycle                    |
 
-The public query, CRUD, Drizzle, sync, diagnostics, snapshot, notification, and
-event APIs remain available. Existing code that only calls `Ominipg.connect()`
-usually needs no source change.
+The public query, CRUD, Drizzle, sync, diagnostics, data-directory export,
+notification, and event APIs remain available. Existing code that only calls
+`Ominipg.connect()` usually needs no source change.
 
 ## Default behavior
 

@@ -1,3 +1,8 @@
 {
-  "extends": "./deno.json"
+  "extends": "./deno.json",
+  "test": {
+    "include": [
+      "test/**/*.ts"
+    ]
+  }
 }
