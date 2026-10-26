@@ -74,13 +74,14 @@ for (const concurrent of [false, true]) {
     const release = gate();
     let called = false;
     f.hook(async (sql) => {
-      if (sql === "BEGIN") {
+      if (sql === (concurrent ? "BEGIN;\nSELECT first" : "BEGIN")) {
         entered.resolve();
         await release.promise;
       }
     });
     try {
-      const transaction = f.db.transaction(() => {
+      const transaction = f.db.transaction(async (tx) => {
+        await tx.query("SELECT first");
         called = true;
       });
       const rejected = assertRejects(() => transaction, Error, "timed out");
@@ -91,7 +92,7 @@ for (const concurrent of [false, true]) {
       await f.db.query("SELECT after");
       assertEquals(called, false);
       assertEquals(f.operations.map((sql) => sql.slice(sql.indexOf(":") + 1)), [
-        "BEGIN",
+        ...(concurrent ? ["BEGIN;\nSELECT first"] : ["BEGIN", "SELECT first"]),
         "ROLLBACK",
         "SELECT after",
       ]);
@@ -139,7 +140,7 @@ for (const concurrent of [false, true]) {
     const entered = gate();
     const release = gate();
     let retained: OminipgTransaction | undefined;
-    let operation: Promise<void> | undefined;
+    let operation: Promise<unknown> | undefined;
     f.hook(async (sql) => {
       if (sql === "COMMIT") {
         entered.resolve();
@@ -149,6 +150,7 @@ for (const concurrent of [false, true]) {
     try {
       operation = f.db.transaction((tx) => {
         retained = tx;
+        return tx.query("SELECT inside");
       });
       await entered.promise;
       const rejected = assertRejects(
@@ -179,7 +181,8 @@ for (const concurrent of [false, true]) {
     try {
       await assertRejects(
         () =>
-          f.db.transaction(() => {
+          f.db.transaction(async (tx) => {
+            await tx.query("SELECT inside");
             throw new Error("callback failed");
           }),
         Error,
@@ -210,7 +213,7 @@ for (const concurrent of [false, true]) {
       let raw: Promise<unknown> | undefined;
       let operation: Promise<unknown> | undefined;
       f.hook(async (sql) => {
-        if (sql === "SELECT held") {
+        if (sql === (concurrent ? "BEGIN;\nSELECT held" : "SELECT held")) {
           entered.resolve();
           await release.promise;
         }
@@ -240,7 +243,12 @@ for (const concurrent of [false, true]) {
         await outcome;
         assertEquals(
           f.operations.map((sql) => sql.slice(sql.indexOf(":") + 1)),
-          ["BEGIN", "SELECT held", fail ? "ROLLBACK" : "COMMIT"],
+          [
+            ...(concurrent
+              ? ["BEGIN;\nSELECT held"]
+              : ["BEGIN", "SELECT held"]),
+            fail ? "ROLLBACK" : "COMMIT",
+          ],
         );
       } finally {
         release.resolve();
@@ -262,7 +270,8 @@ for (const concurrent of [false, true]) {
     });
     let operation: Promise<unknown> | undefined;
     try {
-      operation = f.db.transaction(() => {
+      operation = f.db.transaction(async (tx) => {
+        await tx.query("SELECT inside");
         throw new Error("callback failed");
       });
       const rejected = assertRejects(
@@ -371,7 +380,8 @@ Deno.test("pooled: public close after failed rollback still drains other admitte
   try {
     await assertRejects(
       () =>
-        f.db.transaction(() => {
+        f.db.transaction(async (tx) => {
+          await tx.query("SELECT inside");
           throw new Error("primary");
         }),
       Error,

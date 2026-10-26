@@ -100,8 +100,7 @@ for (const continueReading of [false, true]) {
         }
         await db.query("SELECT after");
         assertEquals(operations, [
-          "BEGIN",
-          "SELECT owned",
+          "BEGIN;\nSELECT owned",
           ...(continueReading ? ["SELECT continued"] : []),
           rollback ? "ROLLBACK" : "COMMIT",
           "SELECT waiting",
@@ -130,7 +129,7 @@ for (const defaultLane of [false, true]) {
         return Promise.resolve(Object.assign(new EventEmitter(), {
           async query(sql: string) {
             operations.push(sql);
-            if (sql === "SELECT slow") await release.promise;
+            if (sql.endsWith("SELECT slow")) await release.promise;
             return { rows: [] };
           },
           release() {},
@@ -161,7 +160,10 @@ for (const defaultLane of [false, true]) {
         await db.transaction((tx) => tx.query("SELECT independent"));
       } else await db.query("SELECT independent");
       await new Promise((done) => setTimeout(done, 70));
-      assertEquals(operations.includes("SELECT independent"), true);
+      assertEquals(
+        operations.some((sql) => sql.endsWith("SELECT independent")),
+        true,
+      );
       assertEquals(
         operations.includes("SELECT next"),
         false,

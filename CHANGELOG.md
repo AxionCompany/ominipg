@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.11.1
+
+- Add `transaction(work, { isolation?, readOnly? })` on both the database and
+  CRUD facade. PostgreSQL and PGlite apply isolation/access mode directly on
+  `BEGIN`, eliminating a separate `SET TRANSACTION` for read snapshots.
+- Defer callback transaction startup until its first query. Empty callbacks
+  issue no SQL. PostgreSQL batches `BEGIN` with an unparameterized first
+  statement; parameterized statements keep bound parameters and separate driver
+  calls. Workloads advertise support; older workloads use explicit `BEGIN`.
+- Preserve raw transaction lanes, cleanup, and first-statement error recovery,
+  including batch parse errors that can prevent `BEGIN` itself from executing.
+
+For N statements, PostgreSQL query calls fall from N + 2 to N + 1 when the first
+statement has no parameters (including commit). A read-only repeatable-read
+transaction falls from N + 3 to N + 1, or N + 2 with a parameterized first
+query. Empty callbacks fall from two calls to zero.
+
 ## 0.11.0 — Breaking
 
 Removed the read-snapshot API and protocol without deprecation:

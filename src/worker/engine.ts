@@ -1,3 +1,4 @@
+import type { OminipgTransactionOptions } from "../shared/transaction.ts";
 import type { OminipgEngineConfig } from "../shared/types.ts";
 import type {
   PgNotification,
@@ -80,9 +81,10 @@ export class OminipgEngine {
     sql: string,
     params?: unknown[],
     transaction?: string,
+    begin?: OminipgTransactionOptions,
   ): Promise<unknown[]> {
     this.assertReady();
-    return await exec(this.state, sql, params, transaction);
+    return await exec(this.state, sql, params, transaction, begin);
   }
 
   async sync(): Promise<number> {

@@ -38,6 +38,7 @@ async function smokeDeprecatedUseWorkerTrue() {
   try {
     const ping = await db.query("SELECT 1 AS ok");
     assert.equal(ping.rows[0].ok, 1);
+    await smokeTransactions(db);
   } finally {
     await db.close();
   }
@@ -97,6 +98,40 @@ async function smokeDeprecatedUseWorkerFalse() {
   }
 }
 
+async function smokeTransactions(db) {
+  assert.equal(await db.transaction(() => 42), 42);
+  await db.transaction(async (tx) => {
+    assert.equal(
+      (await tx.query("SHOW transaction_isolation")).rows[0]
+        .transaction_isolation,
+      "repeatable read",
+    );
+    assert.equal(
+      (await tx.query("SHOW transaction_read_only")).rows[0]
+        .transaction_read_only,
+      "on",
+    );
+  }, { isolation: "repeatable read", readOnly: true });
+  await assert.rejects(
+    () =>
+      db.transaction(
+        (tx) => tx.query("CREATE TABLE forbidden_write (id int)"),
+        { readOnly: true },
+      ),
+    /read-only transaction/,
+  );
+  await assert.rejects(
+    () => db.transaction((tx) => tx.query("SELEC broken")),
+    /syntax error/,
+  );
+  await db.transaction(async (tx) => {
+    assert.equal(
+      (await tx.query("SELECT $1::int AS value", [7])).rows[0].value,
+      7,
+    );
+  });
+}
+
 async function smokeDirectPostgres() {
   const url = process.env.DB_URL_PG;
   if (!url) return;
@@ -111,6 +146,7 @@ async function smokeDirectPostgres() {
     await db.query(`INSERT INTO ${table}(id) VALUES ($1)`, [1]);
     const { rows } = await db.query(`SELECT id FROM ${table}`);
     assert.equal(rows[0].id, 1);
+    await smokeTransactions(db);
   } finally {
     await db.query(`DROP TABLE IF EXISTS ${table}`);
     await db.close();

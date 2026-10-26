@@ -52,11 +52,9 @@ for (const mode of ["callback", "raw lane"] as const) {
           callback: (tx: OminipgTransaction) => Promise<void>,
         ) => {
           if (db) {
-            return await db.transaction(async (tx) => {
-              await tx.query(
-                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
-              );
-              await callback(tx);
+            return await db.transaction(callback, {
+              isolation: "repeatable read",
+              readOnly: true,
             });
           }
           const lane = crypto.randomUUID();
@@ -104,8 +102,8 @@ for (const mode of ["callback", "raw lane"] as const) {
           assertEquals(pids.size, max);
           let queuedEntered = false;
           const queued = transaction(async (tx) => {
-            queuedEntered = true;
             assertEquals(pids.has(await inspect(tx)), true);
+            queuedEntered = true;
           });
           void queued.catch(() => {});
           work.push(queued);

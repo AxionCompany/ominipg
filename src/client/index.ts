@@ -52,6 +52,12 @@
  * ```
  */
 
+import {
+  type OminipgTransactionOptions,
+  transactionBegin,
+} from "../shared/transaction.ts";
+export type { OminipgTransactionOptions } from "../shared/transaction.ts";
+
 import { TypedEmitter } from "./emitter.ts";
 import type {
   OminipgClientEvents,
@@ -189,6 +195,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   private operationTail: Promise<void> = Promise.resolve();
   /** Set when the workload runs queries concurrently (PostgreSQL pools). */
   private concurrent = false;
+  private transactionStart = false;
   private readonly concurrentOperations = new Set<Promise<void>>();
   private closePromise?: Promise<void>;
   private sessionClosePromise?: Promise<void>;
@@ -364,9 +371,10 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
     try {
       const initialized = await session.request<
-        { concurrent?: boolean } | undefined
+        { concurrent?: boolean; transactionStart?: boolean } | undefined
       >("initialize", initConfig, 60_000);
       db.concurrent = initialized?.concurrent === true;
+      db.transactionStart = initialized?.transactionStart === true;
     } catch (error) {
       await session.close().catch(() => {});
       throw error;
@@ -446,12 +454,16 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
    */
   public async transaction<T>(
     callback: (transaction: OminipgTransaction) => T | Promise<T>,
+    options: OminipgTransactionOptions = {},
   ): Promise<T> {
     this.assertOpen();
+    transactionBegin(options);
+    options = { ...options };
     const run = () =>
       this.laneTransaction(
         callback,
         this.concurrent ? crypto.randomUUID() : undefined,
+        options,
       );
     return await (this.concurrent
       ? this.runConcurrent(run)
@@ -645,19 +657,28 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
   private laneTransaction<T>(
     callback: (transaction: OminipgTransaction) => T | Promise<T>,
-    lane?: string,
+    lane: string | undefined,
+    options: OminipgTransactionOptions,
   ): Promise<T> {
     return this.scopedTransaction(
       callback,
-      (sql, params) => this.queryInLane(sql, params, lane),
+      (sql, params, begin) => this.queryInLane(sql, params, lane, begin),
+      options,
     );
   }
 
   private async scopedTransaction<T>(
     callback: (transaction: OminipgTransaction) => T | Promise<T>,
-    send: OminipgTransaction["query"],
+    send: <TRow extends Record<string, unknown> = Record<string, unknown>>(
+      sql: string,
+      params?: unknown[],
+      begin?: OminipgTransactionOptions,
+    ) => Promise<{ rows: TRow[] }>,
+    options: OminipgTransactionOptions,
   ): Promise<T> {
     let active = true;
+    let started = false;
+    let opening: Promise<unknown> | undefined;
     const pending = new Set<Promise<unknown>>();
     const query = <TRow extends Record<string, unknown>>(
       sql: string,
@@ -666,7 +687,15 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       if (!active || this.poisoned || this.closed) {
         return Promise.reject(new Error("Ominipg transaction is closed."));
       }
-      const result = send<TRow>(sql, params);
+      const first = !started;
+      started = true;
+      // Older workloads do not understand start metadata: retain explicit BEGIN.
+      if (first && !this.transactionStart) {
+        opening = send(transactionBegin(options));
+      }
+      const result = opening
+        ? opening.then(() => send<TRow>(sql, params))
+        : send<TRow>(sql, params, first ? options : undefined);
       pending.add(result);
       void result.then(
         () => pending.delete(result),
@@ -676,9 +705,6 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     };
     const transaction: OminipgTransaction = { query, queryRaw: query };
     try {
-      // BEGIN belongs inside cleanup: a timeout may hide a successful remote
-      // open. The session gate drains that request before admitting ROLLBACK.
-      await send("BEGIN");
       let result: T;
       try {
         result = await callback(transaction);
@@ -686,13 +712,13 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         active = false;
       }
       await Promise.all([...pending]);
-      await send("COMMIT");
+      if (started) await send("COMMIT");
       return result;
     } catch (error) {
       active = false;
       await Promise.allSettled([...pending]);
       try {
-        await send("ROLLBACK");
+        if (started) await send("ROLLBACK");
       } catch {
         // An unproved rollback must not return a possibly live transaction to
         // service. Retire the session without waiting on our own operation.
@@ -712,6 +738,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     sql: string,
     params?: unknown[],
     transaction?: string,
+    begin?: OminipgTransactionOptions,
   ): Promise<{ rows: TRow[] }> {
     if (this.poisoned || this.closed) {
       throw new Error("Ominipg instance is closed.");
@@ -720,6 +747,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       sql,
       params,
       ...(transaction === undefined ? {} : { transaction }),
+      ...(begin === undefined ? {} : { begin }),
     });
   }
 
@@ -799,6 +827,7 @@ export type OminipgDrizzleMixin = {
   /** Run a callback in one workload-scoped transaction. */
   transaction: <T>(
     callback: (transaction: OminipgTransaction) => T | Promise<T>,
+    options?: OminipgTransactionOptions,
   ) => Promise<T>;
   /** Access to the underlying Ominipg instance */
   _ominipg: Ominipg;
