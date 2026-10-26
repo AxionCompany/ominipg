@@ -1,25 +1,5 @@
 import type { PgPool, PgPoolClient } from "../shared/types.ts";
 
-type PairSlot = {
-  client: Pick<PgPoolClient, "query">;
-  returnClient(destroy?: boolean): void;
-  reset: boolean;
-  discarded: boolean;
-  released: boolean;
-};
-type PairState = {
-  acquiring: boolean;
-  sealing: boolean;
-  slots: PairSlot[];
-  pending: Set<Promise<unknown>>;
-  release?: Promise<void>;
-};
-export type ReservedPgPair = Readonly<{
-  clients: readonly [Pick<PgPoolClient, "query">, Pick<PgPoolClient, "query">];
-  /** Seals new statements, drains admitted statements and resets both clients
-   * before returning them. Caller abort alone never releases capacity. */
-  release(): Promise<void>;
-}>;
 function changed() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
@@ -30,32 +10,12 @@ function changed() {
 function closed(): Error {
   return new Error("PostgreSQL pool is closed.");
 }
-function unavailable(): Error {
-  return Object.assign(
-    new Error("Snapshot connection capacity is unavailable."),
-    {
-      code: "snapshot_capacity_unavailable",
-    },
-  );
-}
-
-/** Only emitted when this acquisition cannot confirm return of its own
- * partially acquired clients. Capacity refusal is not this failure class. */
-export class PgPairCleanupError extends AggregateError {
-  constructor(causes: unknown[]) {
-    super(causes, "PostgreSQL pair acquisition cleanup is unconfirmed.");
-    this.name = "PgPairCleanupError";
-  }
-}
-
-/** One shared checkout boundary. Normal calls retain the provider's queueing;
- * an optional pair reservation must fit within the same configured total. */
+/** Tracks ordinary provider checkouts and drains them before shutdown. */
 export class AccountedPgPool implements PgPool {
   readonly options: PgPool["options"];
   private normal = 0;
   /** Physical returns that threw retain their charge and a cleanup handle. */
   private readonly failedReturns = new Set<() => void>();
-  private pair?: PairState;
   private closing = false;
   private endTask?: Promise<void>;
   private rawEndStarted = false;
@@ -63,7 +23,7 @@ export class AccountedPgPool implements PgPool {
 
   constructor(
     private readonly pool: PgPool,
-    private readonly max: number,
+    max: number,
     private readonly reportError: (error: Error) => void = () => {},
   ) {
     if (!Number.isSafeInteger(max) || max < 1) {
@@ -89,7 +49,7 @@ export class AccountedPgPool implements PgPool {
     release(destroy?: boolean): void;
   }> {
     const client = await this.pool.connect();
-    // Attach as EACH checkout settles, including the first half of a pair.
+    // Attach as each checkout settles.
     // The event is independent of the active SQL promise's rejection.
     let fault: Error | undefined;
     const onError = (error: Error) => {
@@ -118,12 +78,6 @@ export class AccountedPgPool implements PgPool {
   }
 
   async connect(): Promise<PgPoolClient> {
-    // No await before counting an immediately admissible borrow. Reservation
-    // and checkout therefore cannot both claim the same available capacity.
-    while (this.pair?.acquiring && this.normal >= this.max - 2) {
-      if (this.closing) throw closed();
-      await this.change.promise;
-    }
     if (this.closing) throw closed();
     this.normal++;
     let borrowed: Awaited<ReturnType<AccountedPgPool["checkout"]>>;
@@ -179,118 +133,6 @@ export class AccountedPgPool implements PgPool {
     return wrapper;
   }
 
-  async reservePair(signal?: AbortSignal): Promise<ReservedPgPair> {
-    signal?.throwIfAborted();
-    if (this.closing) throw closed();
-    if (this.pair || this.max < 2 || this.normal > this.max - 2) {
-      throw unavailable();
-    }
-    const state: PairState = {
-      acquiring: true,
-      sealing: false,
-      slots: [],
-      pending: new Set(),
-    };
-    this.pair = state;
-    // Capture synchronous provider failures without skipping the second result.
-    const connect = () => this.checkout();
-    const results = await Promise.allSettled([connect(), connect()]);
-    let failure: unknown;
-    let failed = false;
-    for (const result of results) {
-      if (result.status === "fulfilled") {
-        state.slots.push({
-          client: { query: result.value.query },
-          returnClient: result.value.release,
-          reset: false,
-          discarded: false,
-          released: false,
-        });
-      } else if (!failed) {
-        failure = result.reason;
-        failed = true;
-      }
-    }
-    state.acquiring = false;
-    this.notify();
-    if (failed || this.closing || signal?.aborted) {
-      // These clients have never been exposed and cannot contain our SQL.
-      for (const slot of state.slots) slot.reset = true;
-      try {
-        await this.releasePair(state);
-      } catch (error) {
-        throw new PgPairCleanupError(failed ? [failure, error] : [error]);
-      }
-      if (failed) throw failure;
-      throw signal?.aborted ? signal.reason : closed();
-    }
-    const executor = (slot: PairSlot): Pick<PgPoolClient, "query"> => ({
-      query: (sql, params) => {
-        if (this.closing || state.sealing || this.pair !== state) {
-          return Promise.reject(
-            new Error("Reserved PostgreSQL pair is closed."),
-          );
-        }
-        const task = Promise.resolve().then(() =>
-          slot.client.query(sql, params)
-        );
-        state.pending.add(task);
-        void task.then(
-          () => state.pending.delete(task),
-          () => state.pending.delete(task),
-        );
-        return task;
-      },
-    });
-    return Object.freeze({
-      clients: Object.freeze([
-        executor(state.slots[0]),
-        executor(state.slots[1]),
-      ]) as ReservedPgPair["clients"],
-      release: () => this.releasePair(state),
-    });
-  }
-
-  private releasePair(state: PairState): Promise<void> {
-    if (state.release) return state.release;
-    state.sealing = true;
-    const task = (async () => {
-      await Promise.allSettled([...state.pending]);
-      let failure: unknown;
-      let failed = false;
-      for (const slot of state.slots) {
-        if (slot.released) continue;
-        if (!slot.reset) {
-          try {
-            await slot.client.query("ROLLBACK");
-          } catch {
-            slot.discarded = true;
-          }
-          slot.reset = true;
-        }
-        try {
-          slot.returnClient(slot.discarded);
-          slot.released = true;
-        } catch (error) {
-          if (!failed) {
-            failure = error;
-            failed = true;
-          }
-        }
-      }
-      if (state.slots.every((slot) => slot.released)) {
-        if (this.pair === state) this.pair = undefined;
-        this.notify();
-      }
-      if (failed) throw failure;
-    })();
-    state.release = task;
-    void task.catch(() => {
-      state.release = undefined;
-    });
-    return task;
-  }
-
   end(): Promise<void> {
     if (this.endTask) return this.endTask;
     this.closing = true;
@@ -298,10 +140,7 @@ export class AccountedPgPool implements PgPool {
     // Publish the close promise before invoking any provider cleanup, which
     // may synchronously reenter end(). Admission is already sealed above.
     this.endTask = Promise.resolve().then(async () => {
-      // Pair executors are private to this reservation, so close can seal them,
-      // drain their actual SQL and reset/release them. Existing normal clients
-      // still own their terminal statements and must return themselves.
-      while (this.normal || this.pair) {
+      while (this.normal) {
         const wake = this.change.promise;
         let failed = false;
         let failure: unknown;
@@ -315,19 +154,8 @@ export class AccountedPgPool implements PgPool {
             }
           }
         }
-        const state = this.pair;
-        if (state && !state.acquiring) {
-          try {
-            await this.releasePair(state);
-          } catch (error) {
-            if (!failed) {
-              failed = true;
-              failure = error;
-            }
-          }
-        }
         if (failed) throw failure;
-        if (!this.normal && !this.pair) break;
+        if (!this.normal) break;
         await wake;
       }
       // Once physical shutdown starts its outcome is retained, including an

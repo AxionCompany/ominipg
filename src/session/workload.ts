@@ -93,17 +93,6 @@ function recordPayload(
 
 function requestLane(request: OminipgSessionRequest): string | undefined {
   const payload = request.payload as Record<string, unknown> | undefined;
-  if (
-    request.operation === "snapshot-open" ||
-    request.operation === "snapshot-query" ||
-    request.operation === "snapshot-close"
-  ) {
-    if (typeof payload?.snapshotId !== "string") return undefined;
-    const lane = request.operation === "snapshot-query"
-      ? payload.current === true ? "current" : "snapshot"
-      : "lifecycle";
-    return JSON.stringify(["snapshot", payload.snapshotId, lane]);
-  }
   if (request.operation !== "query") return undefined;
   return typeof payload?.transaction === "string"
     ? JSON.stringify(["transaction", payload.transaction])
@@ -124,7 +113,7 @@ async function executeRequest(
       await engine.initialize(config);
       // Clients send concurrent queries, with transactions on their own
       // lanes, only after this workload reports that it can execute them.
-      return { concurrent: engine.concurrent, snapshotProtocol: 1 };
+      return { concurrent: engine.concurrent };
     }
     case "query": {
       const payload = recordPayload(request);
@@ -145,41 +134,6 @@ async function executeRequest(
           payload.sql,
           payload.params as unknown[],
           payload.transaction as string | undefined,
-        ),
-      };
-    }
-    case "snapshot-open":
-    case "snapshot-query":
-    case "snapshot-close": {
-      const payload = recordPayload(request);
-      const id = payload.snapshotId;
-      if (typeof id !== "string" || !id || id.length > 256) {
-        throw new TypeError("Snapshot requests require a bounded snapshotId.");
-      }
-      if (request.operation === "snapshot-open") {
-        return { kind: await engine.openReadSnapshot(id) };
-      }
-      if (request.operation === "snapshot-close") {
-        await engine.closeReadSnapshot(id);
-        return undefined;
-      }
-      if (typeof payload.sql !== "string") {
-        throw new TypeError("Snapshot query requires SQL.");
-      }
-      if (payload.params !== undefined && !Array.isArray(payload.params)) {
-        throw new TypeError("Snapshot query params must be an array.");
-      }
-      if (
-        payload.current !== undefined && typeof payload.current !== "boolean"
-      ) {
-        throw new TypeError("Snapshot query current must be a boolean.");
-      }
-      return {
-        rows: await engine.queryReadSnapshot(
-          id,
-          payload.sql,
-          payload.params as unknown[] | undefined,
-          payload.current === true,
         ),
       };
     }
@@ -377,18 +331,11 @@ export function createOminipgWorkload(
             schedule(request);
             continue;
           }
-          if (request.operation === "close") {
-            // Release owned snapshot pins before draining unrelated checkouts
-            // that may be waiting for those very connections. respond() below
-            // preserves a cached cleanup error in the normal response frame.
-            await engine.prepareShutdown().catch(() => {});
-          }
           await Promise.allSettled(inFlight);
           await respond(request);
           if (request.operation === "close") break;
         }
         // EOF has the same graceful ordering as an explicit close frame.
-        await engine.prepareShutdown().catch(() => {});
         await Promise.allSettled(inFlight);
         await engine.close();
         await sink.close();

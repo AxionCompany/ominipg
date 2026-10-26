@@ -24,10 +24,10 @@ status: active
 
 ## Purpose
 
-Database foundation used by Copilotz for local or remote PostgreSQL access,
-PGlite, sync, notifications, transactions, Drizzle, and typed CRUD. Every public
-connection is an `ominipg.session.v1` Oxian workload; there is no inline engine,
-Web Worker, or `worker_threads` data path.
+Database foundation for local or remote PostgreSQL access, PGlite, sync,
+notifications, transactions, Drizzle, and typed CRUD. Every public connection is
+an `ominipg.session.v1` Oxian workload; there is no inline engine, Web Worker,
+or `worker_threads` data path.
 
 ## Read These First
 
@@ -67,10 +67,10 @@ Web Worker, or `worker_threads` data path.
 
 - Oxian capacity counts long-lived database sessions rather than SQL queries.
 - PGlite engines are independent and memory-heavy even on a shared host.
-- Transactions own an exclusive client operation lane. Concurrent operations on
-  the same `Ominipg` instance wait until commit or rollback.
+- PostgreSQL transactions pin independent pooled connections and queue beyond
+  available pool capacity. PGlite serializes transactions and other operations.
 - Routed configuration must be wire-encodable. Functions and custom objects do
   not cross the session.
 - Database provider support still varies by runtime despite the portable core.
-- Sync and schema changes can affect Copilotz indirectly.
+- Sync and schema changes can affect downstream applications indirectly.
 - `useWorker` is a deprecated no-op retained only for migration.

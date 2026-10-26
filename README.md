@@ -32,7 +32,8 @@ dispatcher.
 - Direct PostgreSQL, `LISTEN`/`NOTIFY`, and pinned transactions
 - Local-first PGlite-to-PostgreSQL synchronization
 - Type-safe CRUD helpers and Drizzle proxy integration
-- Raw binary session attachments for snapshots and byte-valued rows
+- Raw binary session attachments for PGlite data-directory exports and
+  byte-valued rows
 - Optional database providers: the core does not eagerly load PGlite or `pg`
 
 An embedded worker is a lifecycle and ownership boundary, not an isolation
@@ -367,3 +368,22 @@ MIT License. See [LICENSE](./LICENSE).
 Ominipg builds on [Oxian](https://jsr.io/@oxian/oxian-js),
 [PGlite](https://pglite.dev/), [node-postgres](https://node-postgres.com/), and
 [Drizzle ORM](https://orm.drizzle.team/).
+
+## Consistent read transactions
+
+Use a short ordinary transaction for read-only REPEATABLE READ queries:
+
+```ts
+const rows = await db.transaction(async (tx) => {
+  await tx.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+  return (await tx.query("SELECT * FROM users WHERE id = $1", [userId])).rows;
+});
+```
+
+`transaction()` sends `BEGIN` before the callback and commits on success or
+rolls back on failure. PostgreSQL callbacks each use one pooled connection;
+independent callbacks run concurrently up to available `pgPoolMax` capacity,
+then queue. PGlite serializes callbacks on its single engine. Keep reads inside
+the callback and use its `tx` executor.
+
+See the [0.11.0 breaking changes](./CHANGELOG.md).
