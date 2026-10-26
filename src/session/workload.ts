@@ -1,3 +1,4 @@
+import type { OminipgTransactionOptions } from "../shared/transaction.ts";
 import type { WorkerWorkHandler } from "@oxian/oxian-js/worker";
 import type { OminipgEngineDependencies } from "../worker/engine.ts";
 import { OminipgEngine } from "../worker/engine.ts";
@@ -113,7 +114,7 @@ async function executeRequest(
       await engine.initialize(config);
       // Clients send concurrent queries, with transactions on their own
       // lanes, only after this workload reports that it can execute them.
-      return { concurrent: engine.concurrent };
+      return { concurrent: engine.concurrent, transactionStart: true };
     }
     case "query": {
       const payload = recordPayload(request);
@@ -134,6 +135,7 @@ async function executeRequest(
           payload.sql,
           payload.params as unknown[],
           payload.transaction as string | undefined,
+          payload.begin as OminipgTransactionOptions | undefined,
         ),
       };
     }

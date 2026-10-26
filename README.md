@@ -375,15 +375,26 @@ Use a short ordinary transaction for read-only REPEATABLE READ queries:
 
 ```ts
 const rows = await db.transaction(async (tx) => {
-  await tx.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   return (await tx.query("SELECT * FROM users WHERE id = $1", [userId])).rows;
-});
+}, { isolation: "repeatable read", readOnly: true });
 ```
 
-`transaction()` sends `BEGIN` before the callback and commits on success or
-rolls back on failure. PostgreSQL callbacks each use one pooled connection;
-independent callbacks run concurrently up to available `pgPoolMax` capacity,
-then queue. PGlite serializes callbacks on its single engine. Keep reads inside
-the callback and use its `tx` executor.
+`transaction(work, options?)` accepts `isolation` (`"read committed"`,
+`"repeatable read"`, or `"serializable"`) and `readOnly` (boolean). Omitted
+options retain the database defaults. Both PostgreSQL and PGlite apply these
+options on `BEGIN`, commit on success, and roll back on failure.
+
+The callback starts without issuing SQL; its first query opens the transaction.
+An empty callback sends nothing. PostgreSQL combines `BEGIN` with an
+unparameterized first statement in one simple-protocol query. A parameterized
+first statement retains separate `BEGIN` and query calls; parameters are never
+interpolated. PGlite executes `BEGIN` and the first statement separately. Older
+workloads without deferred-start support also use separate calls.
+
+PostgreSQL callbacks each acquire one pooled connection at their first query;
+independent transactions run up to available `pgPoolMax` capacity, then queue.
+PGlite serializes callbacks on its single engine. Keep reads inside the callback
+and use its `tx` executor. Raw named lanes retain explicit `BEGIN`/`COMMIT` or
+`ROLLBACK` semantics.
 
 See the [0.11.0 breaking changes](./CHANGELOG.md).

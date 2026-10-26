@@ -154,8 +154,7 @@ Deno.test("PostgreSQL transactions pin one pool client per session", async () =>
     );
     const rolledBack = pool.clients[2];
     assertEquals(rolledBack.queries.map(({ sql }) => sql), [
-      "BEGIN",
-      "DELETE FROM entries",
+      "BEGIN;\nDELETE FROM entries",
       "ROLLBACK",
     ]);
     assertEquals(rolledBack.released, true);

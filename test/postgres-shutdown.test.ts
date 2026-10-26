@@ -56,7 +56,7 @@ async function fixture(max = Infinity) {
         fail: 0,
         async query(sql: string) {
           this.queries.push(sql);
-          if (sql === "BEGIN") await begin?.();
+          if (sql.startsWith("BEGIN")) await begin?.();
           return { rows: [] };
         },
         release(destroy = false) {
@@ -100,32 +100,42 @@ async function fixture(max = Infinity) {
     },
   };
 }
-Deno.test("shutdown drains an admitted BEGIN before collecting transaction pins", async () => {
-  const f = await fixture(), entered = gate(), release = gate();
-  f.holdBegin(async () => {
-    entered.resolve();
-    await release.promise;
+for (const deferred of [false, true]) {
+  Deno.test(`shutdown drains an admitted ${deferred ? "first batch" : "BEGIN"} before collecting transaction pins`, async () => {
+    const f = await fixture(), entered = gate(), release = gate();
+    f.holdBegin(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const opening = deferred
+      ? f.db.query("SELECT first", [], "late", {})
+      : f.db.query("BEGIN", [], "late");
+    await entered.promise;
+    const closing = f.db.close();
+    void closing.catch(() => {});
+    release.resolve();
+    try {
+      await opening;
+      await deadline(closing);
+      assertEquals(f.clients.at(-1)!.queries, [
+        deferred ? "BEGIN;\nSELECT first" : "BEGIN",
+        "ROLLBACK",
+      ]);
+      assertEquals(f.clients.at(-1)!.returns, [false]);
+      assertEquals(f.ended(), 1);
+      await assertRejects(
+        () => f.db.query("BEGIN", [], "after"),
+        Error,
+        "closed",
+      );
+    } finally {
+      for (const client of f.clients) {
+        if (!client.released) client.release(true);
+      }
+    }
   });
-  const opening = f.db.query("BEGIN", [], "late");
-  await entered.promise;
-  const closing = f.db.close();
-  void closing.catch(() => {});
-  release.resolve();
-  try {
-    await opening;
-    await deadline(closing);
-    assertEquals(f.clients.at(-1)!.queries, ["BEGIN", "ROLLBACK"]);
-    assertEquals(f.clients.at(-1)!.returns, [false]);
-    assertEquals(f.ended(), 1);
-    await assertRejects(
-      () => f.db.query("BEGIN", [], "after"),
-      Error,
-      "closed",
-    );
-  } finally {
-    for (const client of f.clients) if (!client.released) client.release(true);
-  }
-});
+}
+
 Deno.test("shutdown visits every pin and pool end after a throwing client return", async () => {
   const f = await fixture();
   await f.db.query("BEGIN", [], "first");

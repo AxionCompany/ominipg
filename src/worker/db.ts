@@ -1,3 +1,7 @@
+import {
+  type OminipgTransactionOptions,
+  transactionBegin,
+} from "../shared/transaction.ts";
 import { detectDatabaseType } from "./utils.ts";
 import { transactionControl } from "./transaction-control.ts";
 import { AccountedPgPool } from "./pool-capacity.ts";
@@ -24,6 +28,7 @@ export interface DatabaseClient {
     sql: string,
     params?: unknown[],
     transaction?: string,
+    begin?: OminipgTransactionOptions,
   ): Promise<{ rows: unknown[] }>;
   exec(sql: string): Promise<void>;
   listen?(channel: string, callback: () => void): Promise<void>;
@@ -116,7 +121,13 @@ interface PGliteLike {
 class PGliteAdapter implements DatabaseClient {
   constructor(private pglite: PGliteLike) {}
 
-  async query(sql: string, params?: unknown[]) {
+  async query(
+    sql: string,
+    params?: unknown[],
+    _transaction?: string,
+    begin?: OminipgTransactionOptions,
+  ) {
+    if (begin !== undefined) await this.pglite.query(transactionBegin(begin));
     return await this.pglite.query(sql, params ?? []);
   }
 
@@ -528,6 +539,7 @@ const DEFAULT_TRANSACTION = "";
 
 class PostgresAdapter implements DatabaseClient {
   private readonly transactions = new Map<string, PgPoolClient>();
+  private readonly failedStarts = new Set<string>();
   private readonly opening = new Map<string, Promise<{ rows: unknown[] }>>();
   private readonly pendingPinned = new Set<Promise<unknown>>();
   private readonly cleanupFailures: unknown[] = [];
@@ -536,11 +548,19 @@ class PostgresAdapter implements DatabaseClient {
 
   constructor(readonly pool: AccountedPgPool) {}
 
-  async query(sql: string, params?: unknown[], transaction?: string) {
+  async query(
+    sql: string,
+    params?: unknown[],
+    transaction?: string,
+    begin?: OminipgTransactionOptions,
+  ) {
     if (this.closing) throw new Error("PostgreSQL adapter is closed.");
-    const control = transactionControl(sql);
+    const beginSql = begin === undefined ? undefined : transactionBegin(begin);
+    let control: ReturnType<typeof transactionControl> = beginSql === undefined
+      ? transactionControl(sql)
+      : { kind: "other" };
     const lane = transaction ?? DEFAULT_TRANSACTION;
-    if (control.kind === "begin") {
+    if (beginSql !== undefined || control.kind === "begin") {
       if (this.transactions.has(lane) || this.opening.has(lane)) {
         throw new Error("A PostgreSQL transaction is already active.");
       }
@@ -549,9 +569,49 @@ class PostgresAdapter implements DatabaseClient {
       const task = Promise.resolve().then(async () => {
         const client = await this.pool.connect();
         let result: { rows: unknown[] };
+        let beginConfirmed = false;
         try {
-          result = await client.query(sql, params ?? []);
+          if (beginSql === undefined) {
+            result = await client.query(sql, params ?? []);
+          } else {
+            try {
+              control = transactionControl(sql);
+            } catch (error) {
+              // Preserve the active transaction after a rejected control batch.
+              await client.query(beginSql, []);
+              beginConfirmed = true;
+              throw error;
+            }
+            if (control.kind === "other" && !params?.length) {
+              // pg uses the simple protocol for unparameterized queries and
+              // returns one result per command. Exclude our BEGIN result.
+              const batch = await client.query(`${beginSql};\n${sql}`, []);
+              // Drop BEGIN's own result so callers see what `sql` alone returns.
+              result = !Array.isArray(batch)
+                ? batch
+                : batch.length === 2
+                ? batch[1]
+                : batch.slice(1) as unknown as { rows: unknown[] };
+            } else {
+              // Extended protocol accepts only one statement per Parse.
+              await client.query(beginSql, []);
+              beginConfirmed = true;
+              if (control.kind === "begin") {
+                throw new Error("A PostgreSQL transaction is already active.");
+              }
+              result = await client.query(sql, params ?? []);
+            }
+          }
         } catch (error) {
+          if (
+            beginSql !== undefined && !this.closing && control.kind !== "end"
+          ) {
+            this.transactions.set(lane, client);
+            // A batch parse error may prevent BEGIN executing. Keep ownership,
+            // but refuse further work until an ending; never allow autocommit.
+            if (!beginConfirmed) this.failedStarts.add(lane);
+            throw error;
+          }
           try {
             client.release(true);
           } catch (cleanupError) {
@@ -572,6 +632,10 @@ class PostgresAdapter implements DatabaseClient {
             this.cleanupFailures.push(error);
             throw error;
           }
+        } else if (
+          beginSql !== undefined && control.kind === "end" && !control.chain
+        ) {
+          client.release();
         } else {
           this.transactions.set(lane, client);
         }
@@ -586,9 +650,15 @@ class PostgresAdapter implements DatabaseClient {
     }
     const pinned = this.transactions.get(lane);
     if (pinned) {
+      if (this.failedStarts.has(lane) && control.kind !== "end") {
+        throw new Error(
+          "Current transaction is aborted; roll back before issuing more statements.",
+        );
+      }
       const task = Promise.resolve().then(async () => {
         try {
           const result = await pinned.query(sql, params ?? []);
+          if (control.kind === "end") this.failedStarts.delete(lane);
           if (control.kind === "end" && !control.chain) {
             this.transactions.delete(lane);
             pinned.release();
@@ -597,6 +667,7 @@ class PostgresAdapter implements DatabaseClient {
         } catch (error) {
           if (control.kind === "end") {
             this.transactions.delete(lane);
+            this.failedStarts.delete(lane);
             pinned.release(true);
           }
           throw error;
@@ -650,6 +721,7 @@ class PostgresAdapter implements DatabaseClient {
           this.cleanupFailures.push(error);
         }
         this.transactions.delete(lane);
+        this.failedStarts.delete(lane);
       }
       // Pool shutdown retries failed returns, which can unblock queued opens.
       // It also seals checkout admission and returns late checkouts directly.
@@ -765,11 +837,13 @@ export async function exec(
   sql: string,
   params?: unknown[],
   transaction?: string,
+  begin?: OminipgTransactionOptions,
 ): Promise<unknown[]> {
   const result = await requireMainDb(state).query(
     sql,
     params ?? [],
     transaction,
+    begin,
   );
   return result.rows;
 }
