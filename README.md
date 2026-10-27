@@ -121,9 +121,35 @@ const user = await db.transaction(async (tx) => {
 });
 ```
 
-Queries and other database operations submitted concurrently on the same
-`Ominipg` instance wait until the transaction callback settles. Use the `tx`
-argument for every query that belongs to the transaction.
+Use `tx.finish(sql, params?)` for the last statement when you want to commit
+immediately and return its `{ rows }` result:
+
+```ts
+const event = await db.transaction(async (tx) => {
+  await tx.query("UPDATE jobs SET processed = true WHERE id = $1", [jobId]);
+  const { rows } = await tx.finish<{ id: number }>(
+    "INSERT INTO events(kind) VALUES ('processed') RETURNING id",
+  );
+  return rows[0];
+});
+```
+
+On PostgreSQL, an unparameterized `finish` sends the statement and `COMMIT` in
+one database round trip. If it is the first statement, deferred `BEGIN` joins
+that same batch. With parameters, the statement and commit take two round trips
+(plus `BEGIN` if this is the first statement). PGlite and older workloads
+execute the statement and commit separately.
+
+`finish` waits for pending queries, and further `query`, `queryRaw`, or `finish`
+calls reject with `"Ominipg transaction is closed."`. The enclosing
+`transaction` returns the callback's value without another commit. A statement
+or commit error rejects the transaction and runs rollback cleanup, even if the
+callback catches the `finish` error. Once `finish` succeeds, a later callback
+error cannot undo its commit.
+
+Use the `tx` argument for every query that belongs to the transaction. PGlite
+queues other database operations until the callback settles; PostgreSQL can run
+independent operations on other pool connections.
 
 ### Local-first sync
 

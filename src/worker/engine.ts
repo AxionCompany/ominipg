@@ -82,9 +82,10 @@ export class OminipgEngine {
     params?: unknown[],
     transaction?: string,
     begin?: OminipgTransactionOptions,
+    end?: "commit",
   ): Promise<unknown[]> {
     this.assertReady();
-    return await exec(this.state, sql, params, transaction, begin);
+    return await exec(this.state, sql, params, transaction, begin, end);
   }
 
   async sync(): Promise<number> {

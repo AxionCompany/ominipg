@@ -430,6 +430,8 @@ export class OminipgSessionClient {
         const error = new Error(frame.error.message);
         error.name = frame.error.name;
         if (frame.error.stack) error.stack = frame.error.stack;
+        // PostgreSQL's fields sit on the error itself, as node-postgres puts them.
+        Object.assign(error, frame.error.database ?? {});
         pending.reject(error);
       }
       return;

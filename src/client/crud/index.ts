@@ -1,22 +1,22 @@
 /**
  * @module
- * 
+ *
  * CRUD API Module - MongoDB-style database operations for PostgreSQL.
- * 
+ *
  * This module provides a standalone CRUD API that can be used with any PostgreSQL
  * database library. It includes schema definition, type inference, and powerful
  * query filtering capabilities.
- * 
+ *
  * The CRUD API can be used in two ways:
  * 1. **Integrated with Ominipg**: Automatically available when schemas are provided
  * 2. **Standalone**: Use with any database library via `createCrudApi`
- * 
+ *
  * @example
  * ```typescript
  * // Standalone usage with any database library
  * import { defineSchema, createCrudApi } from "jsr:@oxian/ominipg/crud";
  * import postgres from "npm:postgres";
- * 
+ *
  * const sql = postgres(DATABASE_URL);
  * const schemas = defineSchema({
  *   users: {
@@ -28,16 +28,16 @@
  *     keys: [{ property: "id" }]
  *   }
  * });
- * 
+ *
  * async function queryFn(sql: string, params?: unknown[]) {
  *   const result = await sql.unsafe(sql, params);
  *   return { rows: result };
  * }
- * 
+ *
  * const crud = createCrudApi(schemas, queryFn);
  * const users = await crud.users.find({ name: { $like: "A%" } });
  * ```
- * 
+ *
  * @example
  * ```typescript
  * // Type inference
@@ -49,13 +49,13 @@
 
 import type {
   CrudApi,
+  CrudBaseRow,
   CrudFilter,
   CrudQueryOptions,
   CrudSchemas,
   CrudTableApi,
   CrudTablePopulateKey,
   CrudTableRelations,
-  CrudBaseRow,
   RelationConfig,
   TableMetadata,
   TableMetadataMap,
@@ -64,22 +64,20 @@ import type {
 import { buildMetadataMap } from "./schema.ts";
 import { compileFilter } from "./filter.ts";
 
-export {
-  defineSchema,
-} from "./defineTable.ts";
+export { defineSchema } from "./defineTable.ts";
 
 export type {
   CrudApi,
+  CrudRow,
   CrudSchemas,
   CrudTableApi,
-  CrudRow,
   InferKey,
   InferRow,
   JsonSchema,
-  TableSchemaConfig,
   TableKeyDefinition,
-  TableTimestampConfig,
+  TableSchemaConfig,
   TableTimestampColumns,
+  TableTimestampConfig,
 } from "./types.ts";
 
 type ExecuteFn = (
@@ -90,8 +88,9 @@ type ExecuteFn = (
 type AnyRecord = Record<string, unknown>;
 
 type Simplify<T> = { [K in keyof T]: T[K] } extends infer O ? {
-  [K in keyof O]: O[K];
-} : never;
+    [K in keyof O]: O[K];
+  }
+  : never;
 
 function toColumnList(columns: string[]): string {
   return columns.map((col) => `"${col}"`).join(", ");
@@ -162,7 +161,8 @@ function hasJsonLikeType(schema: unknown): boolean {
   if ("properties" in obj) return true;
   if ("items" in obj) return true;
   // Check unions
-  const unions = (obj.anyOf as unknown[]) ?? (obj.oneOf as unknown[]) ?? (obj.allOf as unknown[]);
+  const unions = (obj.anyOf as unknown[]) ?? (obj.oneOf as unknown[]) ??
+    (obj.allOf as unknown[]);
   if (Array.isArray(unions)) {
     return unions.some((member) => hasJsonLikeType(member));
   }
@@ -279,7 +279,11 @@ function buildUpsertStatementWithInsertDefaults(
     .filter((column) => providedCols.has(column))
     .map((column) => `"${column}" = EXCLUDED."${column}"`);
 
-  const sql = `INSERT INTO "${metadata.tableName}" (${toColumnList(insertColumns)}) VALUES (${insertPlaceholders.join(", ")}) ON CONFLICT (${toColumnList(metadata.keyOrder)}) ${
+  const sql = `INSERT INTO "${metadata.tableName}" (${
+    toColumnList(insertColumns)
+  }) VALUES (${insertPlaceholders.join(", ")}) ON CONFLICT (${
+    toColumnList(metadata.keyOrder)
+  }) ${
     updateAssignments.length > 0
       ? `DO UPDATE SET ${updateAssignments.join(", ")}`
       : "DO NOTHING"
@@ -1036,16 +1040,16 @@ function buildTableApi<
 
 /**
  * Creates a CRUD API from schema definitions and a query execution function.
- * 
+ *
  * This function generates type-safe CRUD operations for each table defined in
  * the schemas. The resulting API provides MongoDB-style query filters, automatic
  * validation, and full TypeScript type inference.
- * 
+ *
  * @typeParam Schemas - The schema definitions type
  * @param schemas - Schema definitions created with `defineSchema`
  * @param execute - Function that executes SQL queries and returns results
  * @returns CRUD API object with methods for each table (find, create, update, delete, etc.)
- * 
+ *
  * @example
  * ```typescript
  * const schemas = defineSchema({
@@ -1063,22 +1067,22 @@ function buildTableApi<
  *     timestamps: true
  *   }
  * });
- * 
+ *
  * async function queryFn(sql: string, params?: unknown[]) {
  *   // Your database query implementation
  *   const result = await yourDb.query(sql, params);
  *   return { rows: result.rows };
  * }
- * 
+ *
  * const crud = createCrudApi(schemas, queryFn);
- * 
+ *
  * // Use the CRUD API
  * const user = await crud.users.create({
  *   id: "1",
  *   name: "Alice",
  *   email: "alice@example.com"
  * });
- * 
+ *
  * const adults = await crud.users.find({
  *   age: { $gte: 18 }
  * });

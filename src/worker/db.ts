@@ -29,6 +29,7 @@ export interface DatabaseClient {
     params?: unknown[],
     transaction?: string,
     begin?: OminipgTransactionOptions,
+    end?: "commit",
   ): Promise<{ rows: unknown[] }>;
   exec(sql: string): Promise<void>;
   listen?(channel: string, callback: () => void): Promise<void>;
@@ -126,9 +127,12 @@ class PGliteAdapter implements DatabaseClient {
     params?: unknown[],
     _transaction?: string,
     begin?: OminipgTransactionOptions,
+    end?: "commit",
   ) {
     if (begin !== undefined) await this.pglite.query(transactionBegin(begin));
-    return await this.pglite.query(sql, params ?? []);
+    const result = await this.pglite.query(sql, params ?? []);
+    if (end === "commit") await this.pglite.query("COMMIT");
+    return result;
   }
 
   async exec(sql: string) {
@@ -553,6 +557,7 @@ class PostgresAdapter implements DatabaseClient {
     params?: unknown[],
     transaction?: string,
     begin?: OminipgTransactionOptions,
+    end?: "commit",
   ) {
     if (this.closing) throw new Error("PostgreSQL adapter is closed.");
     const beginSql = begin === undefined ? undefined : transactionBegin(begin);
@@ -560,6 +565,14 @@ class PostgresAdapter implements DatabaseClient {
       ? transactionControl(sql)
       : { kind: "other" };
     const lane = transaction ?? DEFAULT_TRANSACTION;
+    const ending = end === "commit";
+    // A newline before the separator also handles SQL ending in a line comment.
+    const statement = ending && !params?.length ? `${sql}\n;\nCOMMIT` : sql;
+    const execute = async (client: PgPoolClient) => {
+      const result = await client.query(statement, params ?? []);
+      if (ending && params?.length) await client.query("COMMIT", []);
+      return ending && Array.isArray(result) ? result[0] : result;
+    };
     if (beginSql !== undefined || control.kind === "begin") {
       if (this.transactions.has(lane) || this.opening.has(lane)) {
         throw new Error("A PostgreSQL transaction is already active.");
@@ -572,7 +585,7 @@ class PostgresAdapter implements DatabaseClient {
         let beginConfirmed = false;
         try {
           if (beginSql === undefined) {
-            result = await client.query(sql, params ?? []);
+            result = await execute(client);
           } else {
             try {
               control = transactionControl(sql);
@@ -585,11 +598,14 @@ class PostgresAdapter implements DatabaseClient {
             if (control.kind === "other" && !params?.length) {
               // pg uses the simple protocol for unparameterized queries and
               // returns one result per command. Exclude our BEGIN result.
-              const batch = await client.query(`${beginSql};\n${sql}`, []);
+              const batch = await client.query(
+                `${beginSql};\n${statement}`,
+                [],
+              );
               // Drop BEGIN's own result so callers see what `sql` alone returns.
               result = !Array.isArray(batch)
                 ? batch
-                : batch.length === 2
+                : ending || batch.length === 2
                 ? batch[1]
                 : batch.slice(1) as unknown as { rows: unknown[] };
             } else {
@@ -599,7 +615,7 @@ class PostgresAdapter implements DatabaseClient {
               if (control.kind === "begin") {
                 throw new Error("A PostgreSQL transaction is already active.");
               }
-              result = await client.query(sql, params ?? []);
+              result = await execute(client);
             }
           }
         } catch (error) {
@@ -633,7 +649,8 @@ class PostgresAdapter implements DatabaseClient {
             throw error;
           }
         } else if (
-          beginSql !== undefined && control.kind === "end" && !control.chain
+          ending ||
+          (beginSql !== undefined && control.kind === "end" && !control.chain)
         ) {
           client.release();
         } else {
@@ -657,14 +674,16 @@ class PostgresAdapter implements DatabaseClient {
       }
       const task = Promise.resolve().then(async () => {
         try {
-          const result = await pinned.query(sql, params ?? []);
+          const result = await execute(pinned);
           if (control.kind === "end") this.failedStarts.delete(lane);
-          if (control.kind === "end" && !control.chain) {
+          if (ending || (control.kind === "end" && !control.chain)) {
             this.transactions.delete(lane);
             pinned.release();
           }
           return { rows: result.rows };
         } catch (error) {
+          // A failed finish batch may have skipped COMMIT. Keep its pin for
+          // rollback; this also safely cleans up a COMMIT-time failure.
           if (control.kind === "end") {
             this.transactions.delete(lane);
             this.failedStarts.delete(lane);
@@ -685,7 +704,7 @@ class PostgresAdapter implements DatabaseClient {
     }
     const client = await this.pool.connect();
     try {
-      const result = await client.query(sql, params ?? []);
+      const result = await execute(client);
       return { rows: result.rows };
     } finally {
       client.release();
@@ -838,12 +857,14 @@ export async function exec(
   params?: unknown[],
   transaction?: string,
   begin?: OminipgTransactionOptions,
+  end?: "commit",
 ): Promise<unknown[]> {
   const result = await requireMainDb(state).query(
     sql,
     params ?? [],
     transaction,
     begin,
+    end,
   );
   return result.rows;
 }

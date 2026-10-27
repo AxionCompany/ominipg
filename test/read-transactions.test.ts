@@ -49,7 +49,9 @@ for (const mode of ["callback", "raw lane"] as const) {
           : undefined;
         if (engine) await engine.initialize(options);
         const transaction = async (
-          callback: (tx: OminipgTransaction) => Promise<void>,
+          callback: (
+            tx: Pick<OminipgTransaction, "query" | "queryRaw">,
+          ) => Promise<void>,
         ) => {
           if (db) {
             return await db.transaction(callback, {
@@ -76,7 +78,9 @@ for (const mode of ["callback", "raw lane"] as const) {
         const entered = Array.from({ length: max }, gate);
         const pids = new Set<number>();
         const work: Promise<void>[] = [];
-        const inspect = async (tx: OminipgTransaction) => {
+        const inspect = async (
+          tx: Pick<OminipgTransaction, "query" | "queryRaw">,
+        ) => {
           const { rows } = await tx.query<
             { pid: number; readonly: string; isolation: string }
           >(
