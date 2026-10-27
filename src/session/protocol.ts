@@ -54,9 +54,30 @@ export type OminipgSessionResponse =
         name: string;
         message: string;
         stack?: string;
+        /** PostgreSQL diagnostic fields, when the error came from the database. */
+        database?: DatabaseErrorFields;
       }>;
     }>
   );
+
+/** The PostgreSQL error fields a database error carries across the session. */
+export const DATABASE_ERROR_FIELDS = [
+  "code",
+  "detail",
+  "hint",
+  "position",
+  "schema",
+  "table",
+  "column",
+  "dataType",
+  "constraint",
+  "severity",
+  "where",
+] as const;
+
+export type DatabaseErrorFields = Readonly<
+  Partial<Record<(typeof DATABASE_ERROR_FIELDS)[number], string>>
+>;
 
 export type OminipgSessionEvent =
   | Readonly<{

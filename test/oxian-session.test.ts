@@ -638,3 +638,45 @@ Deno.test("a lost post-start session rejects pending work once without an unhand
     await recoveredHypervisor.shutdown().catch(() => {});
   }
 });
+
+for (const backend of ["pglite", "postgres"] as const) {
+  Deno.test({
+    name:
+      `${backend}: database errors keep PostgreSQL's diagnostic fields across the session`,
+    ignore: backend === "postgres" && !Deno.env.get("DB_URL_PG"),
+    async fn() {
+      const db = await Ominipg.connect({
+        url: backend === "postgres" ? Deno.env.get("DB_URL_PG")! : ":memory:",
+        ...(backend === "pglite"
+          ? { pgliteProvider: createPGliteProvider() }
+          : {
+            pgProvider: (await import("../src/providers/pg.ts"))
+              .createPgProvider(),
+          }),
+      });
+      const table = `diag_${
+        crypto.randomUUID().replaceAll("-", "").slice(0, 8)
+      }`;
+      try {
+        await db.query(
+          `CREATE TABLE ${table} (id text CONSTRAINT ${table}_pkey PRIMARY KEY)`,
+        );
+        await db.query(`INSERT INTO ${table} VALUES ('a')`);
+        const error = await assertRejects(() =>
+          db.query(`INSERT INTO ${table} VALUES ($1)`, ["a"])
+        );
+        const fields = error as Error & {
+          code?: string;
+          constraint?: string;
+          table?: string;
+        };
+        assertEquals(fields.code, "23505");
+        assertEquals(fields.constraint, `${table}_pkey`);
+        assertEquals(fields.table, table);
+      } finally {
+        await db.query(`DROP TABLE IF EXISTS ${table}`);
+        await db.close();
+      }
+    },
+  });
+}

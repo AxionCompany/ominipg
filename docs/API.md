@@ -405,10 +405,10 @@ async transaction<T>(
 PostgreSQL execution pins one pool client per transaction. Independent callbacks
 run concurrently up to available `pgPoolMax` capacity; additional callbacks
 queue. PGlite serializes callbacks and other operations on its single engine.
-The transaction view exposes `query()` and `queryRaw()`. Use that view for
-transaction queries. Awaiting parent-instance operations inside a PGlite
-callback would wait for the callback itself to settle; on PostgreSQL it can also
-wait indefinitely if all pool connections are held by callbacks.
+The transaction view exposes `query()`, `queryRaw()`, and `finish()`. Use that
+view for transaction queries. Awaiting parent-instance operations inside a
+PGlite callback would wait for the callback itself to settle; on PostgreSQL it
+can also wait indefinitely if all pool connections are held by callbacks.
 
 ```ts
 const result = await db.transaction(async (tx) => {
@@ -416,6 +416,15 @@ const result = await db.transaction(async (tx) => {
   return await tx.query("SELECT * FROM users WHERE id = $1", [id]);
 });
 ```
+
+`tx.finish<TRow>(sql, params?)` returns `Promise<{ rows: TRow[] }>` after
+executing the last statement and committing. It drains pending queries, rejects
+further transaction SQL, and suppresses the callback's implicit commit.
+`transaction()` still returns the callback's value. PostgreSQL batches an
+unparameterized statement with `COMMIT` (and deferred `BEGIN` if first);
+parameterized SQL, PGlite, and older workloads use separate statement and commit
+calls. Statement or commit failures reject `transaction()` and trigger rollback
+cleanup. A successful `finish` cannot be undone by a later callback error.
 
 For a short read-only REPEATABLE READ transaction, set its characteristics
 before the first read. The callback API has already sent `BEGIN`:

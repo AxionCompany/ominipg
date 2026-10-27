@@ -99,6 +99,52 @@ async function smokeDeprecatedUseWorkerFalse() {
 }
 
 async function smokeTransactions(db) {
+  const table = `omini_finish_node_${Date.now()}`;
+  await db.query(
+    `CREATE TABLE ${table} (id INT UNIQUE DEFERRABLE INITIALLY DEFERRED)`,
+  );
+  try {
+    assert.equal(
+      await db.transaction(async (tx) => {
+        assert.deepEqual(
+          (await tx.finish(`INSERT INTO ${table} VALUES (1) RETURNING id`))
+            .rows,
+          [{ id: 1 }],
+        );
+        await assert.rejects(
+          () => tx.query("SELECT 1"),
+          /Ominipg transaction is closed/,
+        );
+        await assert.rejects(
+          () => tx.finish("SELECT 1"),
+          /Ominipg transaction is closed/,
+        );
+        return 42;
+      }),
+      42,
+    );
+    await assert.rejects(
+      () =>
+        db.transaction((tx) => tx.finish(`INSERT INTO ${table} VALUES (1)`)),
+      /duplicate key/,
+    );
+    await assert.rejects(
+      () => db.transaction((tx) => tx.finish("SELECT 1 / 0")),
+      /division by zero/,
+    );
+    assert.deepEqual(
+      (await db.transaction((tx) =>
+        tx.finish(`INSERT INTO ${table} VALUES ($1) RETURNING id`, [2])
+      )).rows,
+      [{ id: 2 }],
+    );
+    assert.deepEqual(
+      (await db.query(`SELECT id FROM ${table} ORDER BY id`)).rows,
+      [{ id: 1 }, { id: 2 }],
+    );
+  } finally {
+    await db.query(`DROP TABLE ${table}`);
+  }
   assert.equal(await db.transaction(() => 42), 42);
   await db.transaction(async (tx) => {
     assert.equal(

@@ -150,6 +150,11 @@ export type OminipgTransaction = Readonly<{
     sql: string,
     params?: unknown[],
   ): Promise<{ rows: TRow[] }>;
+  /** Run the last statement and commit, returning that statement's rows. */
+  finish<TRow extends Record<string, unknown> = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: TRow[] }>;
   queryRaw<TRow extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params?: unknown[],
@@ -196,6 +201,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   /** Set when the workload runs queries concurrently (PostgreSQL pools). */
   private concurrent = false;
   private transactionStart = false;
+  private transactionEnd = false;
   private readonly concurrentOperations = new Set<Promise<void>>();
   private closePromise?: Promise<void>;
   private sessionClosePromise?: Promise<void>;
@@ -371,10 +377,15 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
 
     try {
       const initialized = await session.request<
-        { concurrent?: boolean; transactionStart?: boolean } | undefined
+        {
+          concurrent?: boolean;
+          transactionStart?: boolean;
+          transactionEnd?: boolean;
+        } | undefined
       >("initialize", initConfig, 60_000);
       db.concurrent = initialized?.concurrent === true;
       db.transactionStart = initialized?.transactionStart === true;
+      db.transactionEnd = initialized?.transactionEnd === true;
     } catch (error) {
       await session.close().catch(() => {});
       throw error;
@@ -662,7 +673,8 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
   ): Promise<T> {
     return this.scopedTransaction(
       callback,
-      (sql, params, begin) => this.queryInLane(sql, params, lane, begin),
+      (sql, params, begin, end) =>
+        this.queryInLane(sql, params, lane, begin, end),
       options,
     );
   }
@@ -673,20 +685,21 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       sql: string,
       params?: unknown[],
       begin?: OminipgTransactionOptions,
+      end?: "commit",
     ) => Promise<{ rows: TRow[] }>,
     options: OminipgTransactionOptions,
   ): Promise<T> {
     let active = true;
     let started = false;
+    let committed = false;
+    let finishing: Promise<unknown> | undefined;
     let opening: Promise<unknown> | undefined;
     const pending = new Set<Promise<unknown>>();
-    const query = <TRow extends Record<string, unknown>>(
+    const execute = <TRow extends Record<string, unknown>>(
       sql: string,
       params?: unknown[],
+      end?: "commit",
     ): Promise<{ rows: TRow[] }> => {
-      if (!active || this.poisoned || this.closed) {
-        return Promise.reject(new Error("Ominipg transaction is closed."));
-      }
       const first = !started;
       started = true;
       // Older workloads do not understand start metadata: retain explicit BEGIN.
@@ -694,8 +707,8 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         opening = send(transactionBegin(options));
       }
       const result = opening
-        ? opening.then(() => send<TRow>(sql, params))
-        : send<TRow>(sql, params, first ? options : undefined);
+        ? opening.then(() => send<TRow>(sql, params, undefined, end))
+        : send<TRow>(sql, params, first ? options : undefined, end);
       pending.add(result);
       void result.then(
         () => pending.delete(result),
@@ -703,7 +716,36 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       );
       return result;
     };
-    const transaction: OminipgTransaction = { query, queryRaw: query };
+    const query: OminipgTransaction["query"] = (sql, params) => {
+      if (!active || this.poisoned || this.closed) {
+        return Promise.reject(new Error("Ominipg transaction is closed."));
+      }
+      return execute(sql, params);
+    };
+    const finish: OminipgTransaction["finish"] = <
+      TRow extends Record<string, unknown>,
+    >(sql: string, params?: unknown[]) => {
+      if (!active || this.poisoned || this.closed) {
+        return Promise.reject(new Error("Ominipg transaction is closed."));
+      }
+      active = false;
+      const result = (async () => {
+        await Promise.all([...pending]);
+        const result = await execute<TRow>(
+          sql,
+          params,
+          this.transactionEnd ? "commit" : undefined,
+        );
+        if (!this.transactionEnd) await send("COMMIT");
+        committed = true;
+        return result;
+      })();
+      finishing = result;
+      // Retain the outcome even if the callback catches it or does not await it.
+      void result.catch(() => {});
+      return result;
+    };
+    const transaction: OminipgTransaction = { query, queryRaw: query, finish };
     try {
       let result: T;
       try {
@@ -712,13 +754,14 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
         active = false;
       }
       await Promise.all([...pending]);
-      if (started) await send("COMMIT");
+      await finishing;
+      if (started && !committed) await send("COMMIT");
       return result;
     } catch (error) {
       active = false;
-      await Promise.allSettled([...pending]);
+      await Promise.allSettled([...pending, finishing]);
       try {
-        if (started) await send("ROLLBACK");
+        if (started && !committed) await send("ROLLBACK");
       } catch {
         // An unproved rollback must not return a possibly live transaction to
         // service. Retire the session without waiting on our own operation.
@@ -739,6 +782,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
     params?: unknown[],
     transaction?: string,
     begin?: OminipgTransactionOptions,
+    end?: "commit",
   ): Promise<{ rows: TRow[] }> {
     if (this.poisoned || this.closed) {
       throw new Error("Ominipg instance is closed.");
@@ -748,6 +792,7 @@ export class Ominipg extends TypedEmitter<OminipgClientEvents> {
       params,
       ...(transaction === undefined ? {} : { transaction }),
       ...(begin === undefined ? {} : { begin }),
+      ...(end === undefined ? {} : { end }),
     });
   }
 

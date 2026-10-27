@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.11.2
+
+- Add `tx.finish(sql, params?)` to run the last statement and commit, returning
+  `{ rows }` for that statement. It waits for pending queries and closes the
+  transaction to further SQL. `transaction()` still returns the callback's value
+  and does not commit again.
+- PostgreSQL batches an unparameterized final statement with `COMMIT`. Combined
+  with deferred `BEGIN`, N unparameterized statements now take N database round
+  trips instead of N + 1; a transaction containing only `finish` takes one.
+  Parameterized final statements, PGlite, and older workloads execute the
+  statement and commit separately. A parameterized first statement still needs a
+  separate `BEGIN`.
+- Workloads advertise `transactionEnd` and accept `end: "commit"` query
+  metadata. Statement and commit failures roll back and release the pinned
+  connection.
+- Database errors keep PostgreSQL's diagnostic fields across the session: `code`
+  (SQLSTATE), `detail`, `hint`, `position`, `schema`, `table`, `column`,
+  `dataType`, `constraint`, `severity` and `where` are set on the rejected
+  error, as node-postgres sets them. Before, only the name and message arrived,
+  so a unique violation (`23505`) could not be told from other failures.
+
+```ts
+const rows = await db.transaction(async (tx) => {
+  await tx.query("UPDATE jobs SET processed = true WHERE id = $1", [jobId]);
+  const { rows } = await tx.finish(
+    "INSERT INTO events(kind) VALUES ('processed') RETURNING id",
+  );
+  return rows;
+});
+```
+
 ## 0.11.1
 
 - Add `transaction(work, { isolation?, readOnly? })` on both the database and

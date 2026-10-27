@@ -264,18 +264,20 @@ function jsonSchemaToZod(schema: JsonSchema, root: RootSchema): z.ZodTypeAny {
     return jsonSchemaToZod(resolved, root);
   }
 
-  const unionMembers = (schema as { anyOf?: JsonSchema[] }).anyOf
-    ?? (schema as { oneOf?: JsonSchema[] }).oneOf;
+  const unionMembers = (schema as { anyOf?: JsonSchema[] }).anyOf ??
+    (schema as { oneOf?: JsonSchema[] }).oneOf;
   if (Array.isArray(unionMembers) && unionMembers.length > 0) {
     const zods = unionMembers.map((member) => jsonSchemaToZod(member, root));
-    const nonNullMembers = zods.filter((member) => !(member instanceof z.ZodNull));
+    const nonNullMembers = zods.filter((member) =>
+      !(member instanceof z.ZodNull)
+    );
     const hasNull = nonNullMembers.length !== zods.length;
     if (nonNullMembers.length === 0) {
       return z.null();
     }
-    const union = nonNullMembers.length === 1
-      ? nonNullMembers[0]
-      : z.union(nonNullMembers as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
+    const union = nonNullMembers.length === 1 ? nonNullMembers[0] : z.union(
+      nonNullMembers as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]],
+    );
     return hasNull ? union.nullable() : union;
   }
 
@@ -609,7 +611,9 @@ export function buildMetadataMap(
     );
     const timestampConfig = config.timestamps;
     if (timestampConfig) {
-      for (const column of [timestampConfig.createdAt, timestampConfig.updatedAt]) {
+      for (
+        const column of [timestampConfig.createdAt, timestampConfig.updatedAt]
+      ) {
         if (!allProperties[column]) {
           throw new Error(
             `Timestamp column '${column}' is not present in table '${tableName}'.`,

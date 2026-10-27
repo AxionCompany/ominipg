@@ -9,6 +9,8 @@ import {
 } from "./codec.ts";
 import {
   assertSessionRequest,
+  DATABASE_ERROR_FIELDS,
+  type DatabaseErrorFields,
   OMINIPG_SESSION_PROTOCOL,
   type OminipgSessionEvent,
   type OminipgSessionInitConfig,
@@ -67,12 +69,22 @@ function toErrorPayload(error: unknown): {
   name: string;
   message: string;
   stack?: string;
+  database?: DatabaseErrorFields;
 } {
   if (error instanceof Error) {
+    // Keep PostgreSQL's diagnostics (SQLSTATE code, constraint, detail, …)
+    // so callers can tell a unique violation from any other failure.
+    const fields = Object.fromEntries(
+      DATABASE_ERROR_FIELDS.flatMap((field) => {
+        const value = (error as unknown as Record<string, unknown>)[field];
+        return typeof value === "string" ? [[field, value]] : [];
+      }),
+    );
     return {
       name: error.name,
       message: error.message,
       ...(error.stack ? { stack: error.stack } : {}),
+      ...(Object.keys(fields).length ? { database: fields } : {}),
     };
   }
   return { name: "Error", message: String(error) };
@@ -114,7 +126,11 @@ async function executeRequest(
       await engine.initialize(config);
       // Clients send concurrent queries, with transactions on their own
       // lanes, only after this workload reports that it can execute them.
-      return { concurrent: engine.concurrent, transactionStart: true };
+      return {
+        concurrent: engine.concurrent,
+        transactionStart: true,
+        transactionEnd: true,
+      };
     }
     case "query": {
       const payload = recordPayload(request);
@@ -130,12 +146,16 @@ async function executeRequest(
       ) {
         throw new TypeError("Ominipg query transaction must be a string.");
       }
+      if (payload.end !== undefined && payload.end !== "commit") {
+        throw new TypeError("Ominipg query end must be commit.");
+      }
       return {
         rows: await engine.query(
           payload.sql,
           payload.params as unknown[],
           payload.transaction as string | undefined,
           payload.begin as OminipgTransactionOptions | undefined,
+          payload.end as "commit" | undefined,
         ),
       };
     }

@@ -410,3 +410,76 @@ Deno.test("pooled: public close after failed rollback still drains other admitte
     await f.db.close();
   }
 });
+
+for (const concurrent of [false, true]) {
+  for (const fail of [false, true]) {
+    Deno.test(`${concurrent ? "pooled" : "exclusive"}: finish drains pending queries and seals immediately (failure=${fail})`, async () => {
+      const f = await fixture(concurrent);
+      const entered = gate();
+      const release = gate();
+      const finishCalled = gate();
+      let retained: OminipgTransaction | undefined;
+      f.hook(async (sql) => {
+        if (sql.includes("SELECT pending")) {
+          entered.resolve();
+          await release.promise;
+          if (fail) throw new Error("pending failed");
+        }
+      });
+      try {
+        const work = f.db.transaction((tx) => {
+          retained = tx;
+          void tx.query("SELECT pending").catch(() => {});
+          // The callback need not await finish; transaction must still drain it.
+          void tx.finish("SELECT final");
+          finishCalled.resolve();
+          return 42;
+        });
+        const outcome = fail
+          ? assertRejects(() => work, Error, "pending failed")
+          : work;
+        await finishCalled.promise;
+        await entered.promise;
+        for (
+          const operation of [
+            retained!.query,
+            retained!.queryRaw,
+            retained!.finish,
+          ]
+        ) {
+          await assertRejects(
+            () => operation("SELECT late"),
+            Error,
+            "Ominipg transaction is closed.",
+          );
+        }
+        assertEquals(
+          f.operations.some((sql) =>
+            sql.includes("SELECT final") || sql.endsWith("COMMIT")
+          ),
+          false,
+        );
+        release.resolve();
+        const result = await outcome;
+        if (!fail) assertEquals(result, 42);
+        assertEquals(
+          f.operations.map((sql) => sql.slice(sql.indexOf(":") + 1)),
+          [
+            ...(concurrent
+              ? ["BEGIN;\nSELECT pending"]
+              : ["BEGIN", "SELECT pending"]),
+            ...(fail
+              ? ["ROLLBACK"]
+              : concurrent
+              ? ["SELECT final\n;\nCOMMIT"]
+              : ["SELECT final", "COMMIT"]),
+          ],
+        );
+        await f.db.transaction((tx) => tx.finish("SELECT recovered"));
+      } finally {
+        release.resolve();
+        await f.db.close();
+      }
+    });
+  }
+}

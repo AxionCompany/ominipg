@@ -77,7 +77,8 @@ function buildJsonAccessor(
   if (path.length === 0) {
     return `"${column}"`;
   }
-  const args = path.map((segment) => `'${escapeJsonPathSegment(segment)}'`).join(", ");
+  const args = path.map((segment) => `'${escapeJsonPathSegment(segment)}'`)
+    .join(", ");
   const extractor = asText ? "jsonb_extract_path_text" : "jsonb_extract_path";
   return `${extractor}("${column}"::jsonb, ${args})`;
 }
@@ -175,22 +176,34 @@ function compileFieldCondition(
   ensureColumn(metadata, column);
 
   if (!isPlainObject(value)) {
-    const columnExpr = buildColumnExpressionForOperator(column, path, "$eq", value);
+    const columnExpr = buildColumnExpressionForOperator(
+      column,
+      path,
+      "$eq",
+      value,
+    );
     return compileComparison(columnExpr, "$eq", value, params, offset);
   }
 
   const clauses: string[] = [];
   for (const [opKey, opValue] of Object.entries(value)) {
-    if (!Object.prototype.hasOwnProperty.call(
-      COMPARISON_OPERATORS,
-      opKey as Operator,
-    )) {
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        COMPARISON_OPERATORS,
+        opKey as Operator,
+      )
+    ) {
       throw new Error(
         `Unsupported operator '${opKey}' in filter for column '${field}'.`,
       );
     }
     const operator = opKey as Operator;
-    const columnExpr = buildColumnExpressionForOperator(column, path, operator, opValue);
+    const columnExpr = buildColumnExpressionForOperator(
+      column,
+      path,
+      operator,
+      opValue,
+    );
     const clause = compileComparison(
       columnExpr,
       operator,
